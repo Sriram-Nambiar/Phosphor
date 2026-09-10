@@ -652,6 +652,83 @@ func TestServer_ModelAccessControl(t *testing.T) {
 	}
 }
 
+func TestServer_RateLimiting(t *testing.T) {
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "test"})
+	})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	srv.cfg.Auth = config.AuthConfig{
+		Enabled: true,
+		Keys: []config.APIKeyConfig{
+			{
+				Key:       "limited-client-token",
+				Name:      "limited-client",
+				RateLimit: 2, // 2 RPM
+			},
+		},
+	}
+
+	// 1. First request -> Allowed
+	req1 := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req1.Header.Set("Authorization", "Bearer limited-client-token")
+	rr1 := httptest.NewRecorder()
+	srv.ServeHTTP(rr1, req1)
+	if rr1.Code != http.StatusOK {
+		t.Errorf("expected 200 OK for req 1, got %d", rr1.Code)
+	}
+	if rr1.Header().Get("X-RateLimit-Limit") != "2" {
+		t.Errorf("expected Limit 2, got %s", rr1.Header().Get("X-RateLimit-Limit"))
+	}
+	if rr1.Header().Get("X-RateLimit-Remaining") != "1" {
+		t.Errorf("expected Remaining 1, got %s", rr1.Header().Get("X-RateLimit-Remaining"))
+	}
+
+	// 2. Second request -> Allowed
+	req2 := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req2.Header.Set("Authorization", "Bearer limited-client-token")
+	rr2 := httptest.NewRecorder()
+	srv.ServeHTTP(rr2, req2)
+	if rr2.Code != http.StatusOK {
+		t.Errorf("expected 200 OK for req 2, got %d", rr2.Code)
+	}
+	if rr2.Header().Get("X-RateLimit-Remaining") != "0" {
+		t.Errorf("expected Remaining 0, got %s", rr2.Header().Get("X-RateLimit-Remaining"))
+	}
+
+	// 3. Third request immediately -> Throttled with 429
+	req3 := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req3.Header.Set("Authorization", "Bearer limited-client-token")
+	rr3 := httptest.NewRecorder()
+	srv.ServeHTTP(rr3, req3)
+	if rr3.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429 Too Many Requests for req 3, got %d", rr3.Code)
+	}
+	if rr3.Header().Get("Retry-After") == "" {
+		t.Errorf("expected Retry-After header on 429 response")
+	}
+	var errResp ErrorResponse
+	if err := json.Unmarshal(rr3.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if errResp.Error.Code != "rate_limit_exceeded" {
+		t.Errorf("expected code rate_limit_exceeded, got %s", errResp.Error.Code)
+	}
+
+	// 4. Public endpoint (/health) is never throttled
+	for i := 0; i < 5; i++ {
+		reqH := httptest.NewRequest(http.MethodGet, "/health", nil)
+		rrH := httptest.NewRecorder()
+		srv.ServeHTTP(rrH, reqH)
+		if rrH.Code != http.StatusOK {
+			t.Errorf("expected /health to never be rate-limited, got %d on attempt %d", rrH.Code, i+1)
+		}
+	}
+}
+
+
 
 
 

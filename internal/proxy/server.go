@@ -63,24 +63,26 @@ func WithRequestID(ctx context.Context, id string) context.Context {
 }
 
 type Server struct {
-	cfg      *config.Config
-	router   *router.Router
-	database *db.DB
-	server   *http.Server
-	mux      *http.ServeMux
-	handler  http.Handler
+	cfg         *config.Config
+	router      *router.Router
+	database    *db.DB
+	rateLimiter *security.ClientRateLimiter
+	server      *http.Server
+	mux         *http.ServeMux
+	handler     http.Handler
 }
 
 func NewServer(cfg *config.Config, r *router.Router, database *db.DB) *Server {
 	s := &Server{
-		cfg:      cfg,
-		router:   r,
-		database: database,
-		mux:      http.NewServeMux(),
+		cfg:         cfg,
+		router:      r,
+		database:    database,
+		rateLimiter: security.NewClientRateLimiter(0),
+		mux:         http.NewServeMux(),
 	}
 
 	s.routes()
-	s.handler = s.requestIDMiddleware(s.corsMiddleware(s.authMiddleware(s.mux)))
+	s.handler = s.requestIDMiddleware(s.corsMiddleware(s.authMiddleware(s.rateLimitMiddleware(s.mux))))
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	s.server = &http.Server{
@@ -199,6 +201,46 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		ctx := auth.WithClientInfo(r.Context(), *client)
 		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func (s *Server) rateLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Public health and readiness endpoints are never rate-limited
+		if r.URL.Path == "/health" || r.URL.Path == "/ready" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		clientKey := ""
+		limitRPM := 0
+		if client, ok := auth.GetClientInfo(r.Context()); ok {
+			clientKey = client.Key
+			if clientKey == "" {
+				clientKey = client.Name
+			}
+			limitRPM = client.RateLimit
+		} else {
+			clientKey = security.GetClientIP(r)
+		}
+
+		bucket := s.rateLimiter.GetBucket(clientKey, limitRPM)
+		if bucket == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		allowed, remaining, retryAfter := bucket.Allow()
+		security.SetRateLimitHeaders(w, limitRPM, remaining, retryAfter)
+
+		if !allowed {
+			writeOpenAIError(w, http.StatusTooManyRequests,
+				"Rate limit reached for your account. Please back off and retry.",
+				"rate_limit_error", "rate_limit_exceeded")
+			return
+		}
+
+		next.ServeHTTP(w, r)
 	})
 }
 
