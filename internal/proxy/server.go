@@ -19,6 +19,29 @@ import (
 	"github.com/google/uuid"
 )
 
+type OpenAIError struct {
+	Message string  `json:"message"`
+	Type    string  `json:"type"`
+	Param   *string `json:"param,omitempty"`
+	Code    string  `json:"code,omitempty"`
+}
+
+type ErrorResponse struct {
+	Error OpenAIError `json:"error"`
+}
+
+func writeOpenAIError(w http.ResponseWriter, statusCode int, message, errType, code string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	_ = json.NewEncoder(w).Encode(ErrorResponse{
+		Error: OpenAIError{
+			Message: message,
+			Type:    errType,
+			Code:    code,
+		},
+	})
+}
+
 type contextKey string
 
 const (
@@ -136,7 +159,7 @@ type ModelListResponse struct {
 
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, `{"error":{"message":"Method not allowed"}}`, http.StatusMethodNotAllowed)
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "Method not allowed. Only GET is supported.", "invalid_request_error", "method_not_allowed")
 		return
 	}
 
@@ -178,7 +201,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, `{"error":{"message":"Method not allowed"}}`, http.StatusMethodNotAllowed)
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "Method not allowed. Only POST is supported.", "invalid_request_error", "method_not_allowed")
 		return
 	}
 
@@ -192,24 +215,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusRequestEntityTooLarge)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"error": map[string]string{
-					"message": fmt.Sprintf("Request body exceeds maximum allowed limit of %d bytes", maxBytes),
-					"type":    "invalid_request_error",
-					"code":    "payload_too_large",
-				},
-			})
+			writeOpenAIError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("Request body exceeds maximum allowed limit of %d bytes", maxBytes), "invalid_request_error", "payload_too_large")
 			return
 		}
-		http.Error(w, `{"error":{"message":"Failed to read request body"}}`, http.StatusBadRequest)
+		writeOpenAIError(w, http.StatusBadRequest, "Failed to read request body", "invalid_request_error", "read_error")
 		return
 	}
 
 	var chatReq provider.ChatRequest
 	if err := json.Unmarshal(bodyBytes, &chatReq); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":{"message":"Invalid JSON: %s"}}`, err.Error()), http.StatusBadRequest)
+		writeOpenAIError(w, http.StatusBadRequest, fmt.Sprintf("Invalid JSON: %s", err.Error()), "invalid_request_error", "invalid_json")
 		return
 	}
 
@@ -229,12 +244,22 @@ func (s *Server) handleNonStreamingCompletions(w http.ResponseWriter, ctx contex
 
 	if err != nil {
 		statusCode := http.StatusBadGateway
+		errType := "api_error"
+		errCode := "gateway_error"
 		if provider.IsRateLimit(err) {
 			statusCode = http.StatusTooManyRequests
+			errType = "rate_limit_error"
+			errCode = "rate_limit_exceeded"
+		} else if provider.IsServerError(err) {
+			statusCode = http.StatusBadGateway
+			errType = "api_error"
+			errCode = "upstream_service_unavailable"
 		}
 
 		if s.database != nil {
-			_ = s.database.LogRequest(ctx, &db.RequestLog{
+			logCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = s.database.LogRequest(logCtx, &db.RequestLog{
 				ID:             requestID,
 				CreatedAt:      time.Now().UTC(),
 				ModelRequested: req.Model,
@@ -247,14 +272,7 @@ func (s *Server) handleNonStreamingCompletions(w http.ResponseWriter, ctx contex
 			})
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(statusCode)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]string{
-				"message": err.Error(),
-				"type":    "phosphor_gateway_error",
-			},
-		})
+		writeOpenAIError(w, statusCode, err.Error(), errType, errCode)
 		return
 	}
 
@@ -298,7 +316,7 @@ func (s *Server) handleNonStreamingCompletions(w http.ResponseWriter, ctx contex
 func (s *Server) handleStreamingCompletions(w http.ResponseWriter, ctx context.Context, req *provider.ChatRequest, requestID string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, `{"error":{"message":"Streaming unsupported by underlying transport"}}`, http.StatusInternalServerError)
+		writeOpenAIError(w, http.StatusInternalServerError, "Streaming unsupported by underlying transport", "api_error", "streaming_unsupported")
 		return
 	}
 
@@ -307,12 +325,22 @@ func (s *Server) handleStreamingCompletions(w http.ResponseWriter, ctx context.C
 	if err != nil {
 		latencyMs := float64(time.Since(start).Milliseconds())
 		statusCode := http.StatusBadGateway
+		errType := "api_error"
+		errCode := "gateway_error"
 		if provider.IsRateLimit(err) {
 			statusCode = http.StatusTooManyRequests
+			errType = "rate_limit_error"
+			errCode = "rate_limit_exceeded"
+		} else if provider.IsServerError(err) {
+			statusCode = http.StatusBadGateway
+			errType = "api_error"
+			errCode = "upstream_service_unavailable"
 		}
 
 		if s.database != nil {
-			_ = s.database.LogRequest(ctx, &db.RequestLog{
+			logCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = s.database.LogRequest(logCtx, &db.RequestLog{
 				ID:             requestID,
 				CreatedAt:      time.Now().UTC(),
 				ModelRequested: req.Model,
@@ -325,14 +353,7 @@ func (s *Server) handleStreamingCompletions(w http.ResponseWriter, ctx context.C
 			})
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(statusCode)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]string{
-				"message": err.Error(),
-				"type":    "phosphor_gateway_error",
-			},
-		})
+		writeOpenAIError(w, statusCode, err.Error(), errType, errCode)
 		return
 	}
 

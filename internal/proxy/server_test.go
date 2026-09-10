@@ -280,3 +280,46 @@ func TestServer_RequestIDMiddleware(t *testing.T) {
 		t.Errorf("expected auto-generated request ID starting with chatcmpl-, got %s", respReqID2)
 	}
 }
+
+func TestServer_StandardizedOpenAIErrors(t *testing.T) {
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	// 1. Method Not Allowed
+	req := httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 Method Not Allowed, got %d", rr.Code)
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("failed to unmarshal standardized error response: %v", err)
+	}
+	if errResp.Error.Type != "invalid_request_error" {
+		t.Errorf("expected error type invalid_request_error, got %s", errResp.Error.Type)
+	}
+	if errResp.Error.Code != "method_not_allowed" {
+		t.Errorf("expected error code method_not_allowed, got %s", errResp.Error.Code)
+	}
+
+	// 2. Invalid JSON
+	reqBadJSON := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{invalid-json"))
+	reqBadJSON.Header.Set("Content-Type", "application/json")
+	rrBadJSON := httptest.NewRecorder()
+	srv.ServeHTTP(rrBadJSON, reqBadJSON)
+
+	if rrBadJSON.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 Bad Request, got %d", rrBadJSON.Code)
+	}
+	var errBadJSON ErrorResponse
+	if err := json.Unmarshal(rrBadJSON.Body.Bytes(), &errBadJSON); err != nil {
+		t.Fatalf("failed to unmarshal JSON error response: %v", err)
+	}
+	if errBadJSON.Error.Code != "invalid_json" {
+		t.Errorf("expected code invalid_json, got %s", errBadJSON.Error.Code)
+	}
+}
