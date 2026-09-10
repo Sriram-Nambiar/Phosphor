@@ -38,12 +38,22 @@ type Config struct {
 	Models         map[string]ModelRule `mapstructure:"models" yaml:"models"`
 }
 
+type CORSConfig struct {
+	Enabled          bool     `mapstructure:"enabled" yaml:"enabled"`
+	AllowedOrigins   []string `mapstructure:"allowed_origins" yaml:"allowed_origins"`
+	AllowedMethods   []string `mapstructure:"allowed_methods" yaml:"allowed_methods"`
+	AllowedHeaders   []string `mapstructure:"allowed_headers" yaml:"allowed_headers"`
+	AllowCredentials bool     `mapstructure:"allow_credentials" yaml:"allow_credentials"`
+	MaxAgeSeconds    int      `mapstructure:"max_age_seconds" yaml:"max_age_seconds"`
+}
+
 type ServerConfig struct {
 	Host                string        `mapstructure:"host" yaml:"host"`
 	Port                int           `mapstructure:"port" yaml:"port"`
 	ReadTimeout         time.Duration `mapstructure:"read_timeout" yaml:"read_timeout"`
 	WriteTimeout        time.Duration `mapstructure:"write_timeout" yaml:"write_timeout"`
 	MaxRequestBodyBytes int64         `mapstructure:"max_request_body_bytes" yaml:"max_request_body_bytes"`
+	CORS                CORSConfig    `mapstructure:"cors" yaml:"cors"`
 }
 
 type DatabaseConfig struct {
@@ -102,6 +112,14 @@ func DefaultConfig() *Config {
 			ReadTimeout:         60 * time.Second,
 			WriteTimeout:        120 * time.Second,
 			MaxRequestBodyBytes: 4 * 1024 * 1024,
+			CORS: CORSConfig{
+				Enabled:          true,
+				AllowedOrigins:   []string{"*"},
+				AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+				AllowedHeaders:   []string{"Content-Type", "Authorization", "x-api-key", "X-Request-ID"},
+				AllowCredentials: true,
+				MaxAgeSeconds:    86400,
+			},
 		},
 		Database: DatabaseConfig{
 			Path: dbPath,
@@ -260,6 +278,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.read_timeout", 60*time.Second)
 	v.SetDefault("server.write_timeout", 120*time.Second)
 	v.SetDefault("server.max_request_body_bytes", int64(4*1024*1024))
+	v.SetDefault("server.cors.enabled", true)
+	v.SetDefault("server.cors.allowed_origins", []string{"*"})
+	v.SetDefault("server.cors.allowed_methods", []string{"GET", "POST", "OPTIONS"})
+	v.SetDefault("server.cors.allowed_headers", []string{"Content-Type", "Authorization", "x-api-key", "X-Request-ID"})
+	v.SetDefault("server.cors.allow_credentials", true)
+	v.SetDefault("server.cors.max_age_seconds", 86400)
 	v.SetDefault("database.path", dbPath)
 	v.SetDefault("routing.default_strategy", "priority")
 	v.SetDefault("routing.timeout_seconds", 30)
@@ -294,6 +318,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Server.MaxRequestBodyBytes < 0 {
 		errs = append(errs, "server.max_request_body_bytes cannot be negative")
+	}
+	if c.Server.CORS.MaxAgeSeconds < 0 {
+		errs = append(errs, "server.cors.max_age_seconds cannot be negative")
 	}
 	if strings.TrimSpace(c.Database.Path) == "" {
 		errs = append(errs, "database.path must not be empty")
@@ -361,6 +388,15 @@ func (c *Config) Validate() error {
 
 func resolveEnvVars(cfg *Config) {
 	cfg.Server.Host = expandEnv(cfg.Server.Host)
+	for i := range cfg.Server.CORS.AllowedOrigins {
+		cfg.Server.CORS.AllowedOrigins[i] = expandEnv(cfg.Server.CORS.AllowedOrigins[i])
+	}
+	for i := range cfg.Server.CORS.AllowedMethods {
+		cfg.Server.CORS.AllowedMethods[i] = expandEnv(cfg.Server.CORS.AllowedMethods[i])
+	}
+	for i := range cfg.Server.CORS.AllowedHeaders {
+		cfg.Server.CORS.AllowedHeaders[i] = expandEnv(cfg.Server.CORS.AllowedHeaders[i])
+	}
 	cfg.Database.Path = expandEnv(cfg.Database.Path)
 
 	for i := range cfg.Providers {

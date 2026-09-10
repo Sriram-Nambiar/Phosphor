@@ -29,6 +29,14 @@ func setupTestServer(t *testing.T, upstreamHandler http.HandlerFunc) (*Server, *
 		Server: config.ServerConfig{
 			Host: "127.0.0.1",
 			Port: 8080,
+			CORS: config.CORSConfig{
+				Enabled:          true,
+				AllowedOrigins:   []string{"*"},
+				AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+				AllowedHeaders:   []string{"Content-Type", "Authorization", "x-api-key", "X-Request-ID"},
+				AllowCredentials: true,
+				MaxAgeSeconds:    86400,
+			},
 		},
 		Routing: config.RoutingConfig{
 			DefaultStrategy: config.StrategyPriority,
@@ -323,3 +331,64 @@ func TestServer_StandardizedOpenAIErrors(t *testing.T) {
 		t.Errorf("expected code invalid_json, got %s", errBadJSON.Error.Code)
 	}
 }
+
+func TestServer_CORS(t *testing.T) {
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	// 1. Default Preflight OPTIONS
+	reqOpt := httptest.NewRequest(http.MethodOptions, "/v1/chat/completions", nil)
+	reqOpt.Header.Set("Origin", "https://client.example.com")
+	rrOpt := httptest.NewRecorder()
+	srv.ServeHTTP(rrOpt, reqOpt)
+
+	if rrOpt.Code != http.StatusNoContent {
+		t.Errorf("expected 204 No Content for OPTIONS, got %d", rrOpt.Code)
+	}
+	if rrOpt.Header().Get("Access-Control-Allow-Origin") != "https://client.example.com" {
+		t.Errorf("expected Access-Control-Allow-Origin to match origin, got %s", rrOpt.Header().Get("Access-Control-Allow-Origin"))
+	}
+	if rrOpt.Header().Get("Access-Control-Allow-Credentials") != "true" {
+		t.Errorf("expected Access-Control-Allow-Credentials to be true")
+	}
+	if !strings.Contains(rrOpt.Header().Get("Access-Control-Allow-Methods"), "POST") {
+		t.Errorf("expected POST in allowed methods, got %s", rrOpt.Header().Get("Access-Control-Allow-Methods"))
+	}
+	if rrOpt.Header().Get("Access-Control-Max-Age") != "86400" {
+		t.Errorf("expected Max-Age 86400, got %s", rrOpt.Header().Get("Access-Control-Max-Age"))
+	}
+
+	// 2. Specific origin filtering
+	srv.cfg.Server.CORS.AllowedOrigins = []string{"https://allowed.com"}
+	srv.cfg.Server.CORS.AllowCredentials = false
+
+	// Request from allowed origin
+	reqAllowed := httptest.NewRequest(http.MethodGet, "/health", nil)
+	reqAllowed.Header.Set("Origin", "https://allowed.com")
+	rrAllowed := httptest.NewRecorder()
+	srv.ServeHTTP(rrAllowed, reqAllowed)
+	if rrAllowed.Header().Get("Access-Control-Allow-Origin") != "https://allowed.com" {
+		t.Errorf("expected allowed origin to be reflected, got %s", rrAllowed.Header().Get("Access-Control-Allow-Origin"))
+	}
+
+	// Request from forbidden origin
+	reqForbidden := httptest.NewRequest(http.MethodGet, "/health", nil)
+	reqForbidden.Header.Set("Origin", "https://malicious.com")
+	rrForbidden := httptest.NewRecorder()
+	srv.ServeHTTP(rrForbidden, reqForbidden)
+	if rrForbidden.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Errorf("expected no allow origin header for forbidden origin, got %s", rrForbidden.Header().Get("Access-Control-Allow-Origin"))
+	}
+
+	// 3. Disabled CORS
+	srv.cfg.Server.CORS.Enabled = false
+	reqDisabled := httptest.NewRequest(http.MethodOptions, "/health", nil)
+	reqDisabled.Header.Set("Origin", "https://allowed.com")
+	rrDisabled := httptest.NewRecorder()
+	srv.ServeHTTP(rrDisabled, reqDisabled)
+	if rrDisabled.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Errorf("expected no CORS headers when CORS disabled")
+	}
+}
+

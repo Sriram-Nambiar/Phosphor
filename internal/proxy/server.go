@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -110,12 +111,53 @@ func (s *Server) requestIDMiddleware(next http.Handler) http.Handler {
 
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, x-api-key, X-Request-ID")
+		cors := s.cfg.Server.CORS
+		if !cors.Enabled {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		origin := r.Header.Get("Origin")
+		allowedOrigin := ""
+		for _, o := range cors.AllowedOrigins {
+			if o == "*" {
+				allowedOrigin = "*"
+				break
+			}
+			if origin != "" && strings.EqualFold(o, origin) {
+				allowedOrigin = origin
+				break
+			}
+		}
+
+		if allowedOrigin != "" {
+			if allowedOrigin == "*" && cors.AllowCredentials && origin != "" {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+				w.Header().Set("Vary", "Origin")
+			} else {
+				w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+				if allowedOrigin != "*" {
+					w.Header().Set("Vary", "Origin")
+				}
+			}
+		}
+
+		if cors.AllowCredentials {
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
+
+		if len(cors.AllowedMethods) > 0 {
+			w.Header().Set("Access-Control-Allow-Methods", strings.Join(cors.AllowedMethods, ", "))
+		}
+		if len(cors.AllowedHeaders) > 0 {
+			w.Header().Set("Access-Control-Allow-Headers", strings.Join(cors.AllowedHeaders, ", "))
+		}
+		if cors.MaxAgeSeconds > 0 {
+			w.Header().Set("Access-Control-Max-Age", strconv.Itoa(cors.MaxAgeSeconds))
+		}
 
 		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusOK)
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 
