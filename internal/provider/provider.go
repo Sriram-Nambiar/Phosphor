@@ -21,10 +21,15 @@ type ResponseFormat struct {
 	Type string `json:"type,omitempty"`
 }
 
+type StreamOptions struct {
+	IncludeUsage bool `json:"include_usage,omitempty"`
+}
+
 type ChatRequest struct {
 	Model          string          `json:"model"`
 	Messages       []ChatMessage   `json:"messages"`
 	Stream         bool            `json:"stream,omitempty"`
+	StreamOptions  *StreamOptions  `json:"stream_options,omitempty"`
 	Temperature    *float64        `json:"temperature,omitempty"`
 	TopP           *float64        `json:"top_p,omitempty"`
 	MaxTokens      *int            `json:"max_tokens,omitempty"`

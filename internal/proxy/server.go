@@ -570,6 +570,9 @@ func (s *Server) handleStreamingCompletions(w http.ResponseWriter, ctx context.C
 	var streamErr error
 	var clientAborted bool
 
+	var lastFinishReason string
+	var chunkCount int
+
 streamLoop:
 	for {
 		select {
@@ -598,6 +601,7 @@ streamLoop:
 				break streamLoop
 			}
 
+			chunkCount++
 			if firstChunk {
 				firstChunk = false
 				ttftMs = float64(time.Since(start).Microseconds()) / 1000.0
@@ -612,6 +616,9 @@ streamLoop:
 
 			if len(chunk.Choices) > 0 {
 				completionChars += len(chunk.Choices[0].Delta.Content)
+				if chunk.Choices[0].FinishReason != "" {
+					lastFinishReason = chunk.Choices[0].FinishReason
+				}
 			}
 			if chunk.Usage != nil {
 				finalUsage = chunk.Usage
@@ -628,12 +635,6 @@ streamLoop:
 		}
 	}
 
-	if streamErr == nil && !clientAborted {
-		// Terminate SSE stream normally
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
-		flusher.Flush()
-	}
-
 	totalLatencyMs := float64(time.Since(start).Microseconds()) / 1000.0
 
 	// Compute token usage
@@ -648,6 +649,34 @@ streamLoop:
 	}
 	totalTokens := promptTokens + compTokens
 	cost := router.CalculateCost(promptTokens, compTokens, streamResult.Candidate.Cost)
+
+	// If client requested stream_options.include_usage, emit terminal usage chunk
+	if req.StreamOptions != nil && req.StreamOptions.IncludeUsage && streamErr == nil && !clientAborted {
+		usageChunk := provider.StreamChunk{
+			ID:      streamResult.Candidate.Model,
+			Object:  "chat.completion.chunk",
+			Created: time.Now().Unix(),
+			Model:   streamResult.Candidate.Model,
+			Choices: []provider.StreamChoice{},
+			Usage: &provider.Usage{
+				PromptTokens:     promptTokens,
+				CompletionTokens: compTokens,
+				TotalTokens:      totalTokens,
+			},
+		}
+		if sseData, err := provider.FormatSSEChunk(usageChunk); err == nil {
+			_, _ = w.Write(sseData)
+			flusher.Flush()
+		}
+	}
+
+	if streamErr == nil && !clientAborted {
+		log.Printf("[Phosphor] Stream completed for request %s (chunks: %d, finish_reason: %s, total_tokens: %d)\n",
+			requestID, chunkCount, lastFinishReason, totalTokens)
+		// Terminate SSE stream normally
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		flusher.Flush()
+	}
 
 	statusCode := http.StatusOK
 	var errorMsg string

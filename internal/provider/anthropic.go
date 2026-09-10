@@ -263,6 +263,7 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *ChatRequest) (<-cha
 
 		var messageID string
 		var modelName string
+		var promptTokens int
 
 		for scanner.Scan() {
 			select {
@@ -293,6 +294,11 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *ChatRequest) (<-cha
 						}
 						if m, ok := msgObj["model"].(string); ok {
 							modelName = m
+						}
+						if uObj, ok := msgObj["usage"].(map[string]interface{}); ok {
+							if inp, ok := uObj["input_tokens"].(float64); ok {
+								promptTokens = int(inp)
+							}
 						}
 					}
 					// Send initial role chunk
@@ -340,6 +346,17 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *ChatRequest) (<-cha
 							finishReason = "length"
 						}
 					}
+					var chunkUsage *Usage
+					if uObj, ok := eventMap["usage"].(map[string]interface{}); ok {
+						if out, ok := uObj["output_tokens"].(float64); ok {
+							comp := int(out)
+							chunkUsage = &Usage{
+								PromptTokens:     promptTokens,
+								CompletionTokens: comp,
+								TotalTokens:      promptTokens + comp,
+							}
+						}
+					}
 					ch <- StreamChunk{
 						ID:      messageID,
 						Object:  "chat.completion.chunk",
@@ -351,6 +368,7 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *ChatRequest) (<-cha
 								FinishReason: finishReason,
 							},
 						},
+						Usage: chunkUsage,
 					}
 
 				case "message_stop":

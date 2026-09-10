@@ -849,3 +849,54 @@ func TestServer_ChatCompletions_Streaming_ClientDisconnect(t *testing.T) {
 	}
 }
 
+func TestServer_ChatCompletions_Streaming_UsageAndFinishReason(t *testing.T) {
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+
+		chunks := []string{
+			`data: {"id":"chatcmpl-u1","choices":[{"index":0,"delta":{"content":"Hello world!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":15,"completion_tokens":5,"total_tokens":20}}`,
+			`data: [DONE]`,
+		}
+
+		for _, c := range chunks {
+			fmt.Fprintf(w, "%s\n\n", c)
+			flusher.Flush()
+		}
+	})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	reqBody := `{"model":"gpt-4o","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"user","content":"Hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(reqBody)))
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	bodyStr := rr.Body.String()
+	if !strings.Contains(bodyStr, `"prompt_tokens":15`) || !strings.Contains(bodyStr, `"completion_tokens":5`) {
+		t.Errorf("expected usage chunk in stream body, got: %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "data: [DONE]") {
+		t.Errorf("expected stream to end with [DONE], got: %s", bodyStr)
+	}
+
+	// Verify database record has exact usage tokens
+	recent, err := dbInstance.GetRecentRequests(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("failed to query db: %v", err)
+	}
+	if len(recent) != 1 {
+		t.Fatalf("expected 1 logged request, got %d", len(recent))
+	}
+	if recent[0].PromptTokens != 15 || recent[0].CompletionTokens != 5 || recent[0].TotalTokens != 20 {
+		t.Errorf("expected (15, 5, 20) tokens in DB, got (%d, %d, %d)",
+			recent[0].PromptTokens, recent[0].CompletionTokens, recent[0].TotalTokens)
+	}
+}
