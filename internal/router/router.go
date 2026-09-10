@@ -517,8 +517,13 @@ func (r *Router) Execute(ctx context.Context, req *provider.ChatRequest, request
 			_ = r.database.UpdateLatencyEMA(ctx, cand.ProviderName, cand.Model, 0, attemptLatency, 0.2, true)
 		}
 
-		// If there is another candidate to fail over to
-		if i+1 < len(candidates) {
+		// Client errors (e.g. 400 Bad Request) are deterministic; fail fast without unnecessary failover
+		if ShouldFailFast(attemptErr) {
+			return nil, attemptErr
+		}
+
+		// If there is another candidate to fail over to and error is retryable
+		if i+1 < len(candidates) && IsRetryable(attemptErr) {
 			nextCandidate := candidates[i+1]
 			trace := db.FailoverTrace{
 				RequestID:    requestID,
@@ -618,7 +623,12 @@ func (r *Router) ExecuteStream(ctx context.Context, req *provider.ChatRequest, r
 			_ = r.database.UpdateLatencyEMA(ctx, cand.ProviderName, cand.Model, 0, attemptLatency, 0.2, true)
 		}
 
-		if i+1 < len(candidates) {
+		// Client errors are deterministic; fail fast without unnecessary failover
+		if ShouldFailFast(attemptErr) {
+			return nil, attemptErr
+		}
+
+		if i+1 < len(candidates) && IsRetryable(attemptErr) {
 			nextCandidate := candidates[i+1]
 			trace := db.FailoverTrace{
 				RequestID:    requestID,

@@ -1,13 +1,8 @@
 package router
 
 import (
-	"context"
-	"errors"
-	"net"
 	"sync"
 	"time"
-
-	"github.com/Sriram-Nambiar/Phosphor/internal/provider"
 )
 
 type CircuitState string
@@ -130,22 +125,5 @@ func (cb *CircuitBreaker) GetConsecutiveFailures() int {
 // IsTransientFailure returns true if the error qualifies as a transient failure
 // (HTTP 429, HTTP 5xx, network timeouts, connection resets).
 func IsTransientFailure(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	if provider.IsRateLimit(err) || provider.IsServerError(err) {
-		return true
-	}
-
-	if errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
-
-	var netErr net.Error
-	if errors.As(err, &netErr) && (netErr.Timeout() || errors.Is(err, context.DeadlineExceeded)) {
-		return true
-	}
-
-	return false
+	return ShouldTripBreaker(err)
 }
