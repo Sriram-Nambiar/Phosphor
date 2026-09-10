@@ -450,3 +450,41 @@ func TestServer_Readiness(t *testing.T) {
 	}
 }
 
+func TestServer_GracefulShutdown(t *testing.T) {
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	srv.server.Addr = "127.0.0.1:0"
+
+	errChan := make(chan error, 1)
+	go func() {
+		err := srv.Start()
+		if err != nil && err != http.ErrServerClosed {
+			errChan <- err
+		} else {
+			errChan <- nil
+		}
+	}()
+
+	// Give server a short moment to listen
+	time.Sleep(50 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Fatalf("expected clean shutdown, got %v", err)
+	}
+
+	select {
+	case err := <-errChan:
+		if err != nil {
+			t.Fatalf("server exited with unexpected error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for server to stop")
+	}
+}
+
+

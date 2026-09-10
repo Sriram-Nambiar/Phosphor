@@ -11,6 +11,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Server.Port != 8080 {
 		t.Errorf("expected default port 8080, got %d", cfg.Server.Port)
 	}
+	if cfg.Server.ShutdownTimeout <= 0 {
+		t.Errorf("expected positive shutdown timeout, got %v", cfg.Server.ShutdownTimeout)
+	}
 	if cfg.Routing.DefaultStrategy != StrategyPriority {
 		t.Errorf("expected default strategy priority, got %s", cfg.Routing.DefaultStrategy)
 	}
@@ -85,6 +88,13 @@ func TestConfig_Validation(t *testing.T) {
 	badHostCfg.Server.Host = ""
 	if err := badHostCfg.Validate(); err == nil {
 		t.Error("expected error for empty host, got nil")
+	}
+
+	// 3b. Negative shutdown timeout
+	badShutdownCfg := *cfg
+	badShutdownCfg.Server.ShutdownTimeout = -1
+	if err := badShutdownCfg.Validate(); err == nil {
+		t.Error("expected error for negative shutdown timeout, got nil")
 	}
 
 	// 4. Invalid provider URL

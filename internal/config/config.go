@@ -52,6 +52,7 @@ type ServerConfig struct {
 	Port                int           `mapstructure:"port" yaml:"port"`
 	ReadTimeout         time.Duration `mapstructure:"read_timeout" yaml:"read_timeout"`
 	WriteTimeout        time.Duration `mapstructure:"write_timeout" yaml:"write_timeout"`
+	ShutdownTimeout     time.Duration `mapstructure:"shutdown_timeout" yaml:"shutdown_timeout"`
 	MaxRequestBodyBytes int64         `mapstructure:"max_request_body_bytes" yaml:"max_request_body_bytes"`
 	CORS                CORSConfig    `mapstructure:"cors" yaml:"cors"`
 }
@@ -111,6 +112,7 @@ func DefaultConfig() *Config {
 			Port:                8080,
 			ReadTimeout:         60 * time.Second,
 			WriteTimeout:        120 * time.Second,
+			ShutdownTimeout:     15 * time.Second,
 			MaxRequestBodyBytes: 4 * 1024 * 1024,
 			CORS: CORSConfig{
 				Enabled:          true,
@@ -277,6 +279,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.port", 8080)
 	v.SetDefault("server.read_timeout", 60*time.Second)
 	v.SetDefault("server.write_timeout", 120*time.Second)
+	v.SetDefault("server.shutdown_timeout", 15*time.Second)
 	v.SetDefault("server.max_request_body_bytes", int64(4*1024*1024))
 	v.SetDefault("server.cors.enabled", true)
 	v.SetDefault("server.cors.allowed_origins", []string{"*"})
@@ -315,6 +318,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Server.WriteTimeout < 0 {
 		errs = append(errs, "server.write_timeout cannot be negative")
+	}
+	if c.Server.ShutdownTimeout < 0 {
+		errs = append(errs, "server.shutdown_timeout cannot be negative")
 	}
 	if c.Server.MaxRequestBodyBytes < 0 {
 		errs = append(errs, "server.max_request_body_bytes cannot be negative")

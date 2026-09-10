@@ -88,7 +88,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("server error: %w", err)
 	case sig := <-stopChan:
 		log.Printf("\n[Phosphor] Received signal %v. Initiating graceful shutdown...\n", sig)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		timeout := cfg.Server.ShutdownTimeout
+		if timeout <= 0 {
+			timeout = 15 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		if err := srv.Shutdown(ctx); err != nil {
 			log.Printf("[Phosphor] Shutdown error: %v\n", err)
