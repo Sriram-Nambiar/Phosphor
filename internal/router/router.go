@@ -3,7 +3,6 @@ package router
 import (
 	"context"
 	"fmt"
-	"sort"
 	"sync"
 	"time"
 
@@ -28,6 +27,7 @@ type Router struct {
 	breakers       map[string]*CircuitBreaker
 	semaphores     map[string]chan struct{}
 	latencyTracker *LatencyTracker
+	scorers        map[config.RoutingStrategy]CandidateScorer
 	mu             sync.RWMutex
 }
 
@@ -39,6 +39,7 @@ func NewRouter(cfg *config.Config, database *db.DB) (*Router, error) {
 		breakers:       make(map[string]*CircuitBreaker),
 		semaphores:     make(map[string]chan struct{}),
 		latencyTracker: NewLatencyTracker(0.2),
+		scorers:        DefaultScorerRegistry(),
 	}
 
 	// Initialize circuit breaker settings from config
@@ -96,6 +97,23 @@ func (r *Router) GetCircuitBreaker(name string) (*CircuitBreaker, bool) {
 // GetLatencyTracker returns the router's latency tracker.
 func (r *Router) GetLatencyTracker() *LatencyTracker {
 	return r.latencyTracker
+}
+
+// RegisterScorer registers a candidate scorer for a routing strategy.
+func (r *Router) RegisterScorer(strategy config.RoutingStrategy, s CandidateScorer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.scorers[strategy] = s
+}
+
+// GetScorer retrieves the candidate scorer for a routing strategy, falling back to PriorityScorer.
+func (r *Router) GetScorer(strategy config.RoutingStrategy) CandidateScorer {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if s, ok := r.scorers[strategy]; ok && s != nil {
+		return s
+	}
+	return &PriorityScorer{}
 }
 
 // ProviderStatuses returns a snapshot map of provider names and their availability states.
@@ -252,26 +270,14 @@ func (r *Router) ResolveCandidates(req *provider.ChatRequest) ([]CandidateTarget
 		finalCandidates = openBreakerCandidates
 	}
 
-	// Sort according to strategy
+	// Rank candidates according to strategy using pluggable scorer
 	estTokens := EstimatePromptTokens(req)
-	switch strategy {
-	case config.StrategyLeastCost:
-		sort.SliceStable(finalCandidates, func(i, j int) bool {
-			costI := EstimateRequestCost(estTokens, finalCandidates[i].Cost)
-			costJ := EstimateRequestCost(estTokens, finalCandidates[j].Cost)
-			return costI < costJ
-		})
-
-	case config.StrategyLowestLatency:
-		sort.SliceStable(finalCandidates, func(i, j int) bool {
-			ttftI := r.latencyTracker.GetTTFT(finalCandidates[i].ProviderName, finalCandidates[i].Model)
-			ttftJ := r.latencyTracker.GetTTFT(finalCandidates[j].ProviderName, finalCandidates[j].Model)
-			return ttftI < ttftJ
-		})
-
-	case config.StrategyPriority:
-		// Preserves target array order
-	}
+	scorer := r.GetScorer(strategy)
+	finalCandidates = scorer.Rank(finalCandidates, ScoringContext{
+		Request:         req,
+		EstimatedTokens: estTokens,
+		LatencyTracker:  r.latencyTracker,
+	})
 
 	return finalCandidates, strategy, nil
 }
