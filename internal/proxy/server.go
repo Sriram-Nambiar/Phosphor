@@ -219,7 +219,9 @@ func (s *Server) handleNonStreamingCompletions(w http.ResponseWriter, ctx contex
 	cost := router.CalculateCost(promptTokens, compTokens, result.Candidate.Cost)
 
 	if s.database != nil {
-		_ = s.database.LogRequest(ctx, &db.RequestLog{
+		logCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.database.LogRequest(logCtx, &db.RequestLog{
 			ID:               requestID,
 			CreatedAt:        time.Now().UTC(),
 			ModelRequested:   req.Model,
@@ -303,7 +305,10 @@ func (s *Server) handleStreamingCompletions(w http.ResponseWriter, ctx context.C
 
 		if firstChunk {
 			firstChunk = false
-			ttftMs = float64(time.Since(start).Milliseconds())
+			ttftMs = float64(time.Since(start).Microseconds()) / 1000.0
+			if ttftMs <= 0 {
+				ttftMs = 0.001
+			}
 			s.router.GetLatencyTracker().Record(streamResult.Candidate.ProviderName, streamResult.Candidate.Model, ttftMs, 0)
 			if s.database != nil {
 				_ = s.database.UpdateLatencyEMA(ctx, streamResult.Candidate.ProviderName, streamResult.Candidate.Model, ttftMs, 0, 0.2, false)
@@ -328,7 +333,7 @@ func (s *Server) handleStreamingCompletions(w http.ResponseWriter, ctx context.C
 	_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	flusher.Flush()
 
-	totalLatencyMs := float64(time.Since(start).Milliseconds())
+	totalLatencyMs := float64(time.Since(start).Microseconds()) / 1000.0
 
 	// Compute token usage
 	promptTokens := router.EstimatePromptTokens(req)
@@ -345,7 +350,9 @@ func (s *Server) handleStreamingCompletions(w http.ResponseWriter, ctx context.C
 
 	// Log completed stream telemetry
 	if s.database != nil {
-		_ = s.database.LogRequest(ctx, &db.RequestLog{
+		logCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.database.LogRequest(logCtx, &db.RequestLog{
 			ID:               requestID,
 			CreatedAt:        time.Now().UTC(),
 			ModelRequested:   req.Model,
