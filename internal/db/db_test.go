@@ -15,6 +15,10 @@ func TestDB_Initialization(t *testing.T) {
 	if d.db == nil {
 		t.Fatal("expected non-nil sql.DB")
 	}
+
+	if err := d.Ping(context.Background()); err != nil {
+		t.Fatalf("expected ping to succeed: %v", err)
+	}
 }
 
 func TestDB_LogRequestAndRecent(t *testing.T) {

@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -389,6 +390,63 @@ func TestServer_CORS(t *testing.T) {
 	srv.ServeHTTP(rrDisabled, reqDisabled)
 	if rrDisabled.Header().Get("Access-Control-Allow-Origin") != "" {
 		t.Errorf("expected no CORS headers when CORS disabled")
+	}
+}
+
+func TestServer_Readiness(t *testing.T) {
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	// 1. Initial healthy state
+	reqReady := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	rrReady := httptest.NewRecorder()
+	srv.ServeHTTP(rrReady, reqReady)
+
+	if rrReady.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for ready check, got %d: %s", rrReady.Code, rrReady.Body.String())
+	}
+
+	var readyResp map[string]any
+	if err := json.Unmarshal(rrReady.Body.Bytes(), &readyResp); err != nil {
+		t.Fatalf("failed to decode ready response: %v", err)
+	}
+	if readyResp["status"] != "ready" {
+		t.Errorf("expected status ready, got %v", readyResp["status"])
+	}
+	if readyResp["database"] != "ok" {
+		t.Errorf("expected database ok, got %v", readyResp["database"])
+	}
+
+	// 2. Method Not Allowed
+	reqPost := httptest.NewRequest(http.MethodPost, "/ready", nil)
+	rrPost := httptest.NewRecorder()
+	srv.ServeHTTP(rrPost, reqPost)
+	if rrPost.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 Method Not Allowed, got %d", rrPost.Code)
+	}
+
+	// 3. Unhealthy when all circuits tripped
+	cb, ok := srv.router.GetCircuitBreaker("mock-p")
+	if !ok {
+		t.Fatal("mock-p circuit breaker not found")
+	}
+	for i := 0; i < 5; i++ {
+		cb.RecordFailure(context.DeadlineExceeded)
+	}
+
+	rrTripped := httptest.NewRecorder()
+	srv.ServeHTTP(rrTripped, reqReady)
+	if rrTripped.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 Service Unavailable when circuits tripped, got %d", rrTripped.Code)
+	}
+
+	var trippedResp map[string]any
+	if err := json.Unmarshal(rrTripped.Body.Bytes(), &trippedResp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if trippedResp["status"] != "not_ready" {
+		t.Errorf("expected status not_ready, got %v", trippedResp["status"])
 	}
 }
 

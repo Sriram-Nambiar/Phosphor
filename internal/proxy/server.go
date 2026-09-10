@@ -93,6 +93,7 @@ func NewServer(cfg *config.Config, r *router.Router, database *db.DB) *Server {
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("/health", s.handleHealth)
+	s.mux.HandleFunc("/ready", s.handleReady)
 	s.mux.HandleFunc("/v1/models", s.handleModels)
 	s.mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
 }
@@ -185,6 +186,68 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"service":   "phosphor",
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "Method not allowed. Only GET is supported.", "invalid_request_error", "method_not_allowed")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+
+	var issues []string
+	dbStatus := "ok"
+	if s.database != nil {
+		if err := s.database.Ping(ctx); err != nil {
+			dbStatus = "unhealthy: " + err.Error()
+			issues = append(issues, "database ping failed: "+err.Error())
+		}
+	} else {
+		dbStatus = "disabled"
+	}
+
+	providerStatuses := make(map[string]string)
+	if s.router != nil {
+		providerStatuses = s.router.ProviderStatuses()
+	}
+
+	if len(providerStatuses) == 0 {
+		issues = append(issues, "no active providers configured")
+	} else {
+		hasAvailable := false
+		for _, state := range providerStatuses {
+			if state == "available" {
+				hasAvailable = true
+				break
+			}
+		}
+		if !hasAvailable {
+			issues = append(issues, "all provider circuit breakers are open")
+		}
+	}
+
+	isReady := len(issues) == 0
+	statusCode := http.StatusOK
+	statusText := "ready"
+	if !isReady {
+		statusCode = http.StatusServiceUnavailable
+		statusText = "not_ready"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	resp := map[string]any{
+		"status":    statusText,
+		"database":  dbStatus,
+		"providers": providerStatuses,
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+	}
+	if len(issues) > 0 {
+		resp["errors"] = issues
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 type ModelInfo struct {

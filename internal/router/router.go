@@ -92,6 +92,23 @@ func (r *Router) GetLatencyTracker() *LatencyTracker {
 	return r.latencyTracker
 }
 
+// ProviderStatuses returns a snapshot map of provider names and their availability states.
+func (r *Router) ProviderStatuses() map[string]string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	statuses := make(map[string]string, len(r.providers))
+	for name := range r.providers {
+		cb, ok := r.breakers[name]
+		if ok && cb != nil && !cb.Allow() {
+			statuses[name] = "circuit_open"
+		} else {
+			statuses[name] = "available"
+		}
+	}
+	return statuses
+}
+
 func (r *Router) findProviderConfig(name string) (config.ProviderConfig, bool) {
 	for _, p := range r.cfg.Providers {
 		if p.Name == name {

@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -167,6 +168,14 @@ func New(dbPath string) (*DB, error) {
 
 func (d *DB) Close() error {
 	return d.db.Close()
+}
+
+// Ping checks if the SQLite database connection is active and responding.
+func (d *DB) Ping(ctx context.Context) error {
+	if d == nil || d.db == nil {
+		return errors.New("database not initialized")
+	}
+	return d.db.PingContext(ctx)
 }
 
 func (d *DB) LogRequest(ctx context.Context, r *RequestLog) error {
