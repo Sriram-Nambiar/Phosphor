@@ -54,6 +54,7 @@ type Router struct {
 	latencyTracker *LatencyTracker
 	scorers        map[config.RoutingStrategy]CandidateScorer
 	backoff        *BackoffPolicy
+	healthChecker  *HealthChecker
 	mu             sync.RWMutex
 }
 
@@ -190,6 +191,8 @@ func (r *Router) ProviderStatuses() map[string]string {
 		cb, ok := r.breakers[name]
 		if ok && cb != nil && !cb.Allow() {
 			statuses[name] = "circuit_open"
+		} else if r.healthChecker != nil && !r.healthChecker.IsHealthy(name) {
+			statuses[name] = "unreachable"
 		} else if sem, ok := r.semaphores[name]; ok && sem != nil && len(sem) >= cap(sem) {
 			statuses[name] = "busy"
 		} else {
@@ -197,6 +200,35 @@ func (r *Router) ProviderStatuses() map[string]string {
 		}
 	}
 	return statuses
+}
+
+// StartHealthChecker starts background health probing at the specified interval.
+func (r *Router) StartHealthChecker(interval time.Duration) *HealthChecker {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.healthChecker != nil {
+		r.healthChecker.Stop()
+	}
+	r.healthChecker = NewHealthChecker(r, interval)
+	r.healthChecker.Start()
+	return r.healthChecker
+}
+
+// StopHealthChecker stops the background health checker if running.
+func (r *Router) StopHealthChecker() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.healthChecker != nil {
+		r.healthChecker.Stop()
+		r.healthChecker = nil
+	}
+}
+
+// GetHealthChecker returns the router's active health checker, if any.
+func (r *Router) GetHealthChecker() *HealthChecker {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.healthChecker
 }
 
 // TryAcquireConcurrency attempts to acquire an active execution slot for a provider.
