@@ -31,11 +31,24 @@ const (
 
 type Config struct {
 	Server         ServerConfig         `mapstructure:"server" yaml:"server"`
+	Auth           AuthConfig           `mapstructure:"auth" yaml:"auth"`
 	Database       DatabaseConfig       `mapstructure:"database" yaml:"database"`
 	Routing        RoutingConfig        `mapstructure:"routing" yaml:"routing"`
 	CircuitBreaker CircuitBreakerConfig `mapstructure:"circuit_breaker" yaml:"circuit_breaker"`
 	Providers      []ProviderConfig     `mapstructure:"providers" yaml:"providers"`
 	Models         map[string]ModelRule `mapstructure:"models" yaml:"models"`
+}
+
+type AuthConfig struct {
+	Enabled bool           `mapstructure:"enabled" yaml:"enabled"`
+	Keys    []APIKeyConfig `mapstructure:"keys" yaml:"keys"`
+}
+
+type APIKeyConfig struct {
+	Key           string   `mapstructure:"key" yaml:"key"`
+	Name          string   `mapstructure:"name" yaml:"name"`
+	AllowedModels []string `mapstructure:"allowed_models" yaml:"allowed_models"`
+	RateLimit     int      `mapstructure:"rate_limit" yaml:"rate_limit"`
 }
 
 type CORSConfig struct {
@@ -122,6 +135,10 @@ func DefaultConfig() *Config {
 				AllowCredentials: true,
 				MaxAgeSeconds:    86400,
 			},
+		},
+		Auth: AuthConfig{
+			Enabled: false,
+			Keys:    []APIKeyConfig{},
 		},
 		Database: DatabaseConfig{
 			Path: dbPath,
@@ -287,6 +304,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.cors.allowed_headers", []string{"Content-Type", "Authorization", "x-api-key", "X-Request-ID"})
 	v.SetDefault("server.cors.allow_credentials", true)
 	v.SetDefault("server.cors.max_age_seconds", 86400)
+	v.SetDefault("auth.enabled", false)
 	v.SetDefault("database.path", dbPath)
 	v.SetDefault("routing.default_strategy", "priority")
 	v.SetDefault("routing.timeout_seconds", 30)
@@ -328,6 +346,18 @@ func (c *Config) Validate() error {
 	if c.Server.CORS.MaxAgeSeconds < 0 {
 		errs = append(errs, "server.cors.max_age_seconds cannot be negative")
 	}
+
+	if c.Auth.Enabled {
+		if len(c.Auth.Keys) == 0 {
+			errs = append(errs, "auth is enabled but no api keys are configured in auth.keys")
+		}
+		for i, k := range c.Auth.Keys {
+			if strings.TrimSpace(k.Key) == "" {
+				errs = append(errs, fmt.Sprintf("auth.keys[%d].key must not be empty", i))
+			}
+		}
+	}
+
 	if strings.TrimSpace(c.Database.Path) == "" {
 		errs = append(errs, "database.path must not be empty")
 	}
@@ -403,6 +433,15 @@ func resolveEnvVars(cfg *Config) {
 	for i := range cfg.Server.CORS.AllowedHeaders {
 		cfg.Server.CORS.AllowedHeaders[i] = expandEnv(cfg.Server.CORS.AllowedHeaders[i])
 	}
+
+	for i := range cfg.Auth.Keys {
+		cfg.Auth.Keys[i].Key = expandEnv(cfg.Auth.Keys[i].Key)
+		cfg.Auth.Keys[i].Name = expandEnv(cfg.Auth.Keys[i].Name)
+		for j := range cfg.Auth.Keys[i].AllowedModels {
+			cfg.Auth.Keys[i].AllowedModels[j] = expandEnv(cfg.Auth.Keys[i].AllowedModels[j])
+		}
+	}
+
 	cfg.Database.Path = expandEnv(cfg.Database.Path)
 
 	for i := range cfg.Providers {

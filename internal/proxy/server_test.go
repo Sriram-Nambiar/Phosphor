@@ -487,4 +487,78 @@ func TestServer_GracefulShutdown(t *testing.T) {
 	}
 }
 
+func TestServer_AuthMiddleware(t *testing.T) {
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	srv.cfg.Auth = config.AuthConfig{
+		Enabled: true,
+		Keys: []config.APIKeyConfig{
+			{
+				Key:  "secret-test-key-123",
+				Name: "test-client",
+			},
+		},
+	}
+
+	// 1. Health and ready are public without auth
+	reqHealth := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rrHealth := httptest.NewRecorder()
+	srv.ServeHTTP(rrHealth, reqHealth)
+	if rrHealth.Code != http.StatusOK {
+		t.Errorf("expected 200 OK for /health without auth, got %d", rrHealth.Code)
+	}
+
+	reqReady := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	rrReady := httptest.NewRecorder()
+	srv.ServeHTTP(rrReady, reqReady)
+	if rrReady.Code != http.StatusOK {
+		t.Errorf("expected 200 OK for /ready without auth, got %d", rrReady.Code)
+	}
+
+	// 2. Missing API key on protected endpoint (/v1/models)
+	reqNoAuth := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rrNoAuth := httptest.NewRecorder()
+	srv.ServeHTTP(rrNoAuth, reqNoAuth)
+	if rrNoAuth.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized for missing API key, got %d", rrNoAuth.Code)
+	}
+	var errResp ErrorResponse
+	if err := json.Unmarshal(rrNoAuth.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if errResp.Error.Code != "invalid_api_key" {
+		t.Errorf("expected error code invalid_api_key, got %s", errResp.Error.Code)
+	}
+
+	// 3. Incorrect API key
+	reqBadAuth := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	reqBadAuth.Header.Set("Authorization", "Bearer wrong-key")
+	rrBadAuth := httptest.NewRecorder()
+	srv.ServeHTTP(rrBadAuth, reqBadAuth)
+	if rrBadAuth.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized for incorrect key, got %d", rrBadAuth.Code)
+	}
+
+	// 4. Valid API key via Bearer token
+	reqValidBearer := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	reqValidBearer.Header.Set("Authorization", "Bearer secret-test-key-123")
+	rrValidBearer := httptest.NewRecorder()
+	srv.ServeHTTP(rrValidBearer, reqValidBearer)
+	if rrValidBearer.Code != http.StatusOK {
+		t.Errorf("expected 200 OK with valid bearer key, got %d", rrValidBearer.Code)
+	}
+
+	// 5. Valid API key via x-api-key header
+	reqValidXKey := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	reqValidXKey.Header.Set("x-api-key", "secret-test-key-123")
+	rrValidXKey := httptest.NewRecorder()
+	srv.ServeHTTP(rrValidXKey, reqValidXKey)
+	if rrValidXKey.Code != http.StatusOK {
+		t.Errorf("expected 200 OK with valid x-api-key header, got %d", rrValidXKey.Code)
+	}
+}
+
+
 

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Sriram-Nambiar/Phosphor/internal/auth"
 	"github.com/Sriram-Nambiar/Phosphor/internal/config"
 	"github.com/Sriram-Nambiar/Phosphor/internal/db"
 	"github.com/Sriram-Nambiar/Phosphor/internal/provider"
@@ -78,7 +79,7 @@ func NewServer(cfg *config.Config, r *router.Router, database *db.DB) *Server {
 	}
 
 	s.routes()
-	s.handler = s.requestIDMiddleware(s.corsMiddleware(s.mux))
+	s.handler = s.requestIDMiddleware(s.corsMiddleware(s.authMiddleware(s.mux)))
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	s.server = &http.Server{
@@ -163,6 +164,40 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 		}
 
 		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Public endpoints that don't require authentication
+		if r.URL.Path == "/health" || r.URL.Path == "/ready" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if !s.cfg.Auth.Enabled {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		rawKey := auth.ExtractAPIKey(r)
+		if rawKey == "" {
+			writeOpenAIError(w, http.StatusUnauthorized,
+				"You didn't provide an API key. You need to provide your API key in an Authorization header using Bearer auth (i.e. Authorization: Bearer YOUR_KEY), or as the x-api-key header.",
+				"invalid_request_error", "invalid_api_key")
+			return
+		}
+
+		client, ok := auth.Authenticate(rawKey, s.cfg.Auth.Keys)
+		if !ok {
+			writeOpenAIError(w, http.StatusUnauthorized,
+				"Incorrect API key provided.",
+				"invalid_request_error", "invalid_api_key")
+			return
+		}
+
+		ctx := auth.WithClientInfo(r.Context(), *client)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
