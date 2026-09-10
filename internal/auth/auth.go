@@ -2,7 +2,9 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"net/http"
 	"strings"
 
@@ -32,6 +34,12 @@ func GetClientInfo(ctx context.Context) (ClientInfo, bool) {
 	return client, ok
 }
 
+// HashKey computes the hexadecimal-encoded SHA-256 digest of an API key.
+func HashKey(rawKey string) string {
+	sum := sha256.Sum256([]byte(rawKey))
+	return hex.EncodeToString(sum[:])
+}
+
 // ExtractAPIKey retrieves the API key from the request.
 // It checks the 'Authorization: Bearer <key>' header first, followed by the 'x-api-key' header.
 func ExtractAPIKey(r *http.Request) string {
@@ -49,23 +57,57 @@ func ExtractAPIKey(r *http.Request) string {
 }
 
 // Authenticate verifies the raw API key against the list of configured keys using constant-time comparison
-// to prevent timing attacks. Returns the matching ClientInfo if authentication succeeds.
+// to prevent timing attacks. It supports plaintext keys, keys with "sha256:" prefix, and explicit KeyHash fields.
+// Returns the matching ClientInfo if authentication succeeds.
 func Authenticate(rawKey string, configuredKeys []config.APIKeyConfig) (*ClientInfo, bool) {
 	if rawKey == "" {
 		return nil, false
 	}
 
 	rawBytes := []byte(rawKey)
+	rawHash := HashKey(rawKey)
+	rawHashBytes := []byte(rawHash)
+
 	for _, k := range configuredKeys {
-		cfgBytes := []byte(k.Key)
-		// subtle.ConstantTimeCompare requires slices of equal length to match
-		if len(rawBytes) == len(cfgBytes) && subtle.ConstantTimeCompare(rawBytes, cfgBytes) == 1 {
-			return &ClientInfo{
-				Key:           k.Key,
-				Name:          k.Name,
-				AllowedModels: k.AllowedModels,
-				RateLimit:     k.RateLimit,
-			}, true
+		// 1. Explicit KeyHash field configured
+		if k.KeyHash != "" {
+			expectedHash := strings.ToLower(strings.TrimSpace(k.KeyHash))
+			expectedHashBytes := []byte(expectedHash)
+			if len(rawHashBytes) == len(expectedHashBytes) && subtle.ConstantTimeCompare(rawHashBytes, expectedHashBytes) == 1 {
+				return &ClientInfo{
+					Key:           k.KeyHash,
+					Name:          k.Name,
+					AllowedModels: k.AllowedModels,
+					RateLimit:     k.RateLimit,
+				}, true
+			}
+		}
+
+		// 2. Key prefixed with sha256:
+		if strings.HasPrefix(strings.ToLower(k.Key), "sha256:") {
+			expectedHash := strings.ToLower(strings.TrimSpace(k.Key[7:]))
+			expectedHashBytes := []byte(expectedHash)
+			if len(rawHashBytes) == len(expectedHashBytes) && subtle.ConstantTimeCompare(rawHashBytes, expectedHashBytes) == 1 {
+				return &ClientInfo{
+					Key:           k.Key,
+					Name:          k.Name,
+					AllowedModels: k.AllowedModels,
+					RateLimit:     k.RateLimit,
+				}, true
+			}
+		}
+
+		// 3. Plaintext key
+		if k.Key != "" {
+			cfgBytes := []byte(k.Key)
+			if len(rawBytes) == len(cfgBytes) && subtle.ConstantTimeCompare(rawBytes, cfgBytes) == 1 {
+				return &ClientInfo{
+					Key:           k.Key,
+					Name:          k.Name,
+					AllowedModels: k.AllowedModels,
+					RateLimit:     k.RateLimit,
+				}, true
+			}
 		}
 	}
 

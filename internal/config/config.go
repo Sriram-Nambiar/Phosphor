@@ -46,6 +46,7 @@ type AuthConfig struct {
 
 type APIKeyConfig struct {
 	Key           string   `mapstructure:"key" yaml:"key"`
+	KeyHash       string   `mapstructure:"key_hash" yaml:"key_hash"`
 	Name          string   `mapstructure:"name" yaml:"name"`
 	AllowedModels []string `mapstructure:"allowed_models" yaml:"allowed_models"`
 	RateLimit     int      `mapstructure:"rate_limit" yaml:"rate_limit"`
@@ -352,8 +353,8 @@ func (c *Config) Validate() error {
 			errs = append(errs, "auth is enabled but no api keys are configured in auth.keys")
 		}
 		for i, k := range c.Auth.Keys {
-			if strings.TrimSpace(k.Key) == "" {
-				errs = append(errs, fmt.Sprintf("auth.keys[%d].key must not be empty", i))
+			if strings.TrimSpace(k.Key) == "" && strings.TrimSpace(k.KeyHash) == "" {
+				errs = append(errs, fmt.Sprintf("auth.keys[%d] must specify either key or key_hash", i))
 			}
 		}
 	}
@@ -436,6 +437,7 @@ func resolveEnvVars(cfg *Config) {
 
 	for i := range cfg.Auth.Keys {
 		cfg.Auth.Keys[i].Key = expandEnv(cfg.Auth.Keys[i].Key)
+		cfg.Auth.Keys[i].KeyHash = expandEnv(cfg.Auth.Keys[i].KeyHash)
 		cfg.Auth.Keys[i].Name = expandEnv(cfg.Auth.Keys[i].Name)
 		for j := range cfg.Auth.Keys[i].AllowedModels {
 			cfg.Auth.Keys[i].AllowedModels[j] = expandEnv(cfg.Auth.Keys[i].AllowedModels[j])

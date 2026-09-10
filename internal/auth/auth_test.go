@@ -110,3 +110,38 @@ func TestClientContext(t *testing.T) {
 		t.Errorf("expected rate limit 50, got %d", retrieved.RateLimit)
 	}
 }
+
+func TestAuthenticate_SHA256HashedKeys(t *testing.T) {
+	rawSecret := "super-secure-token-xyz"
+	hash := HashKey(rawSecret)
+
+	keys := []config.APIKeyConfig{
+		{
+			KeyHash: hash,
+			Name:    "secure-service",
+		},
+		{
+			Key:  "sha256:" + hash,
+			Name: "prefixed-service",
+		},
+	}
+
+	// 1. Match via KeyHash
+	info1, ok1 := Authenticate(rawSecret, []config.APIKeyConfig{keys[0]})
+	if !ok1 || info1 == nil || info1.Name != "secure-service" {
+		t.Errorf("expected match on KeyHash, got ok=%v, info=%+v", ok1, info1)
+	}
+
+	// 2. Match via sha256: prefix in Key
+	info2, ok2 := Authenticate(rawSecret, []config.APIKeyConfig{keys[1]})
+	if !ok2 || info2 == nil || info2.Name != "prefixed-service" {
+		t.Errorf("expected match on sha256: prefix, got ok=%v, info=%+v", ok2, info2)
+	}
+
+	// 3. Failed match with wrong raw secret
+	_, ok3 := Authenticate("invalid-token", keys)
+	if ok3 {
+		t.Error("expected failure for wrong token against hashed keys")
+	}
+}
+

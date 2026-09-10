@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Sriram-Nambiar/Phosphor/internal/auth"
 	"github.com/Sriram-Nambiar/Phosphor/internal/config"
 	"github.com/Sriram-Nambiar/Phosphor/internal/db"
 	"github.com/Sriram-Nambiar/Phosphor/internal/provider"
@@ -557,6 +558,19 @@ func TestServer_AuthMiddleware(t *testing.T) {
 	srv.ServeHTTP(rrValidXKey, reqValidXKey)
 	if rrValidXKey.Code != http.StatusOK {
 		t.Errorf("expected 200 OK with valid x-api-key header, got %d", rrValidXKey.Code)
+	}
+
+	// 6. Valid API key configured via SHA-256 KeyHash
+	srv.cfg.Auth.Keys = append(srv.cfg.Auth.Keys, config.APIKeyConfig{
+		KeyHash: auth.HashKey("hashed-secret-token-456"),
+		Name:    "hashed-client",
+	})
+	reqHashed := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	reqHashed.Header.Set("Authorization", "Bearer hashed-secret-token-456")
+	rrHashed := httptest.NewRecorder()
+	srv.ServeHTTP(rrHashed, reqHashed)
+	if rrHashed.Code != http.StatusOK {
+		t.Errorf("expected 200 OK with hashed secret token, got %d", rrHashed.Code)
 	}
 }
 
