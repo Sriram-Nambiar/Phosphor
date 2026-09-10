@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -149,8 +150,27 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	maxBytes := s.cfg.Server.MaxRequestBodyBytes
+	if maxBytes <= 0 {
+		maxBytes = 4 * 1024 * 1024
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]string{
+					"message": fmt.Sprintf("Request body exceeds maximum allowed limit of %d bytes", maxBytes),
+					"type":    "invalid_request_error",
+					"code":    "payload_too_large",
+				},
+			})
+			return
+		}
 		http.Error(w, `{"error":{"message":"Failed to read request body"}}`, http.StatusBadRequest)
 		return
 	}

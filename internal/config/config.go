@@ -39,10 +39,11 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Host         string        `mapstructure:"host" yaml:"host"`
-	Port         int           `mapstructure:"port" yaml:"port"`
-	ReadTimeout  time.Duration `mapstructure:"read_timeout" yaml:"read_timeout"`
-	WriteTimeout time.Duration `mapstructure:"write_timeout" yaml:"write_timeout"`
+	Host                string        `mapstructure:"host" yaml:"host"`
+	Port                int           `mapstructure:"port" yaml:"port"`
+	ReadTimeout         time.Duration `mapstructure:"read_timeout" yaml:"read_timeout"`
+	WriteTimeout        time.Duration `mapstructure:"write_timeout" yaml:"write_timeout"`
+	MaxRequestBodyBytes int64         `mapstructure:"max_request_body_bytes" yaml:"max_request_body_bytes"`
 }
 
 type DatabaseConfig struct {
@@ -96,10 +97,11 @@ func DefaultConfig() *Config {
 
 	return &Config{
 		Server: ServerConfig{
-			Host:         "127.0.0.1",
-			Port:         8080,
-			ReadTimeout:  60 * time.Second,
-			WriteTimeout: 120 * time.Second,
+			Host:                "127.0.0.1",
+			Port:                8080,
+			ReadTimeout:         60 * time.Second,
+			WriteTimeout:        120 * time.Second,
+			MaxRequestBodyBytes: 4 * 1024 * 1024,
 		},
 		Database: DatabaseConfig{
 			Path: dbPath,
@@ -257,6 +259,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.port", 8080)
 	v.SetDefault("server.read_timeout", 60*time.Second)
 	v.SetDefault("server.write_timeout", 120*time.Second)
+	v.SetDefault("server.max_request_body_bytes", int64(4*1024*1024))
 	v.SetDefault("database.path", dbPath)
 	v.SetDefault("routing.default_strategy", "priority")
 	v.SetDefault("routing.timeout_seconds", 30)
@@ -288,6 +291,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Server.WriteTimeout < 0 {
 		errs = append(errs, "server.write_timeout cannot be negative")
+	}
+	if c.Server.MaxRequestBodyBytes < 0 {
+		errs = append(errs, "server.max_request_body_bytes cannot be negative")
 	}
 	if strings.TrimSpace(c.Database.Path) == "" {
 		errs = append(errs, "database.path must not be empty")

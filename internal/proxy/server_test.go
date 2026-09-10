@@ -219,3 +219,23 @@ func TestServer_ChatCompletions_Streaming(t *testing.T) {
 		t.Errorf("expected positive TTFT recorded, got %f", recent[0].TTFTMs)
 	}
 }
+
+func TestServer_RequestBodySizeLimit(t *testing.T) {
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	// Set 50 byte limit for test
+	srv.cfg.Server.MaxRequestBodyBytes = 50
+
+	largeBody := strings.Repeat("A", 100)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(largeBody))
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected HTTP 413, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
