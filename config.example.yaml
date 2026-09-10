@@ -3,13 +3,43 @@ server:
   port: 8080
   read_timeout: 60s
   write_timeout: 120s
+  shutdown_timeout: 15s
+  stream_idle_timeout: 30s
+  max_request_body_bytes: 4194304 # 4 MB
+  cors:
+    enabled: true
+    allowed_origins: ["*"]
+    allowed_methods: ["GET", "POST", "OPTIONS"]
+    allowed_headers: ["Content-Type", "Authorization", "x-api-key", "X-Request-ID"]
+    allow_credentials: true
+    max_age_seconds: 86400
+
+auth:
+  enabled: false # Set true to require client API key authentication
+  keys:
+    - key: "sk-phosphor-dev-key"
+      name: "developer-key"
+      allowed_models: ["*"] # Wildcard or explicit list e.g. ["gpt-4o", "fast"]
+      rate_limit: 120 # Requests per minute (0 = unlimited)
+    # Support SHA-256 hashed keys generated via `phosphor hash-key <key>`:
+    # - key_hash: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    #   name: "production-client"
+    #   allowed_models: ["gpt-4o", "fast"]
+    #   rate_limit: 300
 
 database:
   path: "~/.phosphor/phosphor.db"
 
 routing:
-  default_strategy: "priority" # "priority", "least-cost", "lowest-latency"
+  default_strategy: "priority" # "priority", "weighted-round-robin", "least-cost", "lowest-latency", "composite"
   timeout_seconds: 30
+  cost_weight: 0.5            # Used in composite strategy (cost vs latency balance)
+  latency_weight: 0.5         # Used in composite strategy
+  max_retries: 3              # Max retry attempts for transient upstream failures
+  initial_backoff_ms: 100     # Exponential backoff base with full jitter
+  max_backoff_ms: 2000        # Exponential backoff ceiling
+  default_fallbacks:          # Automatic cross-family fallback models if primary group fails
+    - "gpt-4o-mini"
 
 circuit_breaker:
   failure_threshold: 3
@@ -22,9 +52,11 @@ providers:
     api_key: "${OPENAI_API_KEY}"
     enabled: true
     timeout_seconds: 30
+    max_concurrency: 20 # Concurrency semaphore (0 = unconstrained)
     models:
       - "gpt-4o"
       - "gpt-4o-mini"
+    capabilities: ["vision", "tools", "json"]
     cost:
       prompt_cost_per_1m: 2.50
       completion_cost_per_1m: 10.00
@@ -35,9 +67,11 @@ providers:
     api_key: "${GROQ_API_KEY}"
     enabled: true
     timeout_seconds: 15
+    max_concurrency: 50
     models:
       - "llama-3.3-70b-versatile"
       - "llama-3.1-8b-instant"
+    capabilities: ["tools", "json"]
     cost:
       prompt_cost_per_1m: 0.59
       completion_cost_per_1m: 0.79
@@ -48,9 +82,11 @@ providers:
     api_key: "${ANTHROPIC_API_KEY}"
     enabled: true
     timeout_seconds: 30
+    max_concurrency: 15
     models:
       - "claude-3-5-sonnet-20241022"
       - "claude-3-5-haiku-20241022"
+    capabilities: ["vision", "tools", "json"]
     cost:
       prompt_cost_per_1m: 3.00
       completion_cost_per_1m: 15.00
@@ -61,8 +97,10 @@ providers:
     api_key: "${GEMINI_API_KEY}"
     enabled: true
     timeout_seconds: 30
+    max_concurrency: 30
     models:
       - "gemini-2.0-flash"
+    capabilities: ["vision", "tools", "json"]
     cost:
       prompt_cost_per_1m: 0.10
       completion_cost_per_1m: 0.40
@@ -73,9 +111,11 @@ providers:
     api_key: ""
     enabled: true
     timeout_seconds: 60
+    max_concurrency: 4
     models:
       - "llama3.2"
       - "mistral"
+    capabilities: ["json"]
     cost:
       prompt_cost_per_1m: 0.0
       completion_cost_per_1m: 0.0
@@ -92,12 +132,14 @@ models:
         model: "llama3.2"
 
   gpt-4o:
-    strategy: "priority"
+    strategy: "weighted-round-robin"
     targets:
       - provider: "openai"
         model: "gpt-4o"
+        weight: 7
       - provider: "groq"
         model: "llama-3.3-70b-versatile"
+        weight: 3
 
   fast:
     strategy: "lowest-latency"
@@ -118,3 +160,14 @@ models:
         model: "llama-3.1-8b-instant"
       - provider: "openai"
         model: "gpt-4o-mini"
+
+  balanced:
+    strategy: "composite" # Balances 50% cost and 50% latency
+    targets:
+      - provider: "openai"
+        model: "gpt-4o-mini"
+      - provider: "groq"
+        model: "llama-3.3-70b-versatile"
+      - provider: "gemini"
+        model: "gemini-2.0-flash"
+

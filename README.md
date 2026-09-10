@@ -38,34 +38,62 @@
 ---
 
 ## Key Features
-
-* **OpenAI-Compatible Inbound API**: Transparent drop-in replacement for OpenAI SDKs, LangChain, LlamaIndex, LiteLLM, or `curl`. Serves `POST /v1/chat/completions`, `GET /v1/models`, and `GET /health`.
-* **Zero-Allocation SSE Streaming Pipeline**: True low-latency chunk streaming with `http.Flusher`, capturing Time-To-First-Token (TTFT) on initial chunk arrival.
-* **Smart Dynamic Routing**:
-  * `priority`: Sequential priority list with fallback.
-  * `least-cost`: Pre-calculates estimated prompt cost and routes to the cheapest eligible upstream provider.
-  * `lowest-latency`: Routes to the fastest upstream using an internal rolling Exponential Moving Average (EMA) of Time-To-First-Token (TTFT).
-* **Resilient Failover Engine & Circuit Breakers**:
-  * Automatically cascades to fallback providers on HTTP 429 (Rate Limit), 5xx (Server Error), or network timeout.
-  * Consecutive transient errors trip the provider circuit breaker (`Closed` $\rightarrow$ `Open` $\rightarrow$ `Half-Open`) to prevent latency stampedes.
-* **Pure-Go SQLite Telemetry**:
-  * Powered by `modernc.org/sqlite` (100% CGo-free).
-  * Records request metadata, token consumption, estimated dollar cost, TTFT, and failover traces.
+ 
+* **OpenAI-Compatible Inbound API**: Transparent drop-in replacement for OpenAI SDKs, LangChain, LlamaIndex, Cursor, Continue, or `curl`. Serves `POST /v1/chat/completions`, `GET /v1/models`, `GET /health`, `GET /ready`, and `GET /metrics`.
+* **Zero-Allocation SSE Streaming Pipeline**: True low-latency chunk streaming with `sync.Pool` buffer reuse, immediate client-disconnect cancellation to abort upstream token generation, configurable streaming idle read timeouts, and mid-stream error surfacing.
+* **Smart Multi-Strategy Routing Engine**:
+  * `priority`: Sequential priority list with automatic cascading.
+  * `weighted-round-robin`: Smooth traffic balancing across equivalent providers according to configured weights.
+  * `least-cost`: Computes prompt tokens heuristic and dynamically routes to the cheapest upstream provider.
+  * `lowest-latency`: Routes to the lowest latency provider using a rolling Exponential Moving Average (EMA) of Time-To-First-Token (TTFT).
+  * `composite`: Multi-objective scoring balancing cost and latency ($S = w_{\text{cost}} \cdot \hat{C} + w_{\text{lat}} \cdot \hat{L}$).
+  * **Model Capability Matching**: Automatically validates requests requiring Vision, Tools/Function Calling, or JSON mode against target provider capabilities.
+  * **Fallback Model Groups**: Automatic cross-family failover (e.g. failing over from `gpt-4o` to `claude-3-5-sonnet` or local `llama3.2`).
+* **Resilient Failover & Circuit Breakers**:
+  * Automatically cascades on transient faults (HTTP 429, 5xx, timeouts, connection resets) with Exponential Backoff and Full Jitter ($t = \text{random}(0, \min(M, B \times 2^{\text{attempt}}))$).
+  * Deterministic client errors (400 Bad Request, 422) fail fast immediately without tripping breakers.
+  * Isolated Circuit Breakers (`Closed` $\rightarrow$ `Open` $\rightarrow$ `Half-Open`) with background health probers for proactive recovery.
+* **Security & Access Control**:
+  * Constant-time Bearer and `x-api-key` authentication supporting plaintext and SHA-256 hashed keys (`phosphor hash-key`).
+  * Per-client token-bucket rate limiting with HTTP 429 and `Retry-After` headers.
+  * Per-key model access permissions and model allowlists.
+  * Automatic secret and API key masking/redaction in all logs, error messages, and database traces.
+  * Provider concurrency semaphores to prevent upstream connection saturation.
+* **High-Throughput Asynchronous SQLite Telemetry**:
+  * Powered by pure-Go `modernc.org/sqlite` (100% CGo-free).
+  * In-memory bounded event queue (4096 capacity) with background batch worker flushing SQLite transactions in WAL mode.
+  * Read-your-own-writes consistency and zero-loss queue draining during graceful server shutdown.
+* **Production Observability & Monitoring**:
+  * Prometheus `/metrics` endpoint exposing gateway requests, token counters, estimated costs, provider EMA latencies, circuit breaker states, and queue depth.
+  * Kubernetes-ready `/ready` readiness probe verifying database connectivity and provider availability.
 * **Terminal-First Dashboard**:
   * `phosphor stats`: Styled terminal dashboard displaying spend cards, token usage, and provider health using `charmbracelet/lipgloss`.
   * `phosphor logs`: Real-time request log inspection and visual failover cascade traces (`OpenAI ➔ Groq`).
+  * `phosphor hash-key`: Secure CLI utility for generating salted SHA-256 API key hashes for configuration.
 
 ---
 
 ## Supported Upstream Providers
 
-| Provider | Type | Supported APIs | Protocol |
+| Provider | Type | Supported Models | Capabilities | Protocol |
+| :--- | :--- | :--- | :--- | :--- |
+| **OpenAI** | `openai` | `gpt-4o`, `gpt-4o-mini`, `o1`, `o3-mini` | `vision`, `tools`, `json` | REST / SSE |
+| **Groq** | `groq` | `llama-3.3-70b-versatile`, `llama-3.1-8b-instant` | `tools`, `json` | OpenAI-compatible REST / SSE |
+| **Anthropic** | `anthropic` | `claude-3-5-sonnet-20241022`, `claude-3-5-haiku-20241022` | `vision`, `tools`, `json` | Claude Messages API translation |
+| **Gemini** | `gemini` | `gemini-2.0-flash`, `gemini-1.5-pro` | `vision`, `tools`, `json` | Google OpenAI-compat REST / SSE |
+| **Ollama** | `ollama` | `llama3.2`, `mistral`, `deepseek-r1` | `json` | Local daemon (`localhost:11434`) |
+
+---
+
+## API Endpoints Reference
+
+| Endpoint | Method | Authentication | Description |
 | :--- | :--- | :--- | :--- |
-| **OpenAI** | `openai` | `gpt-4o`, `gpt-4o-mini`, `o1`, `o3-mini` | REST / SSE |
-| **Groq** | `groq` | `llama-3.3-70b-versatile`, `llama-3.1-8b-instant` | OpenAI-compatible REST / SSE |
-| **Anthropic** | `anthropic` | `claude-3-5-sonnet-20241022`, `claude-3-5-haiku-20241022` | Claude Messages API translation |
-| **Gemini** | `gemini` | `gemini-2.0-flash`, `gemini-1.5-pro` | Google OpenAI-compat REST / SSE |
-| **Ollama** | `ollama` | `llama3.2`, `mistral`, `deepseek-r1` | Local daemon (`localhost:11434`) |
+| `/v1/chat/completions` | `POST` | Optional / Required | Main chat completions API. Supports sync JSON and streaming SSE (`"stream": true`). |
+| `/v1/models` | `GET` | Optional / Required | OpenAI-compatible catalog listing all virtual routing groups and underlying provider models. |
+| `/health` | `GET` | None | Fast liveness probe returning `{"status": "ok"}`. |
+| `/ready` | `GET` | None | Kubernetes readiness probe verifying database connectivity and provider states (`200 OK` or `503 Service Unavailable`). |
+| `/metrics` | `GET` | None | Prometheus-compatible metrics endpoint scraping request counters, latencies, tokens, spend, and queue depth. |
 
 ---
 
@@ -250,7 +278,7 @@ Use `-f` or `--failovers` to filter exclusively for failover events:
 
 ## Architecture & Internals
 
-### Circuit Breaker State Machine
+### Circuit Breaker State Machine & Proactive Health Probing
 Every upstream provider has an isolated circuit breaker managing transient error conditions (HTTP 429, HTTP 5xx, context deadlines, network timeouts):
 
 ```
@@ -258,7 +286,7 @@ Every upstream provider has an isolated circuit breaker managing transient error
        |   CLOSED (OK)    | <-------------+
        +------------------+               |
                  |                        |
-         consecutive errors >= threshold  | probe succeeds
+         consecutive errors >= threshold  | probe succeeds / request succeeds
                  |                        |
                  v                        |
        +------------------+               |
@@ -276,24 +304,51 @@ Every upstream provider has an isolated circuit breaker managing transient error
              (back to OPEN)
 ```
 
-### Routing Strategies
-* **`priority`**: Evaluates candidates in user-configured order. If provider 1 fails or is tripped, cascades immediately to provider 2.
-* **`least-cost`**: Evaluates prompt tokens with a heuristic (~4 chars/token + framing tokens) and calculates:
+In addition to passive recovery upon request arrival, a background health checker runs active probes against tripped providers during their cooldown period, testing liveness proactively.
+
+### Multi-Objective Routing & Candidate Scoring
+Phosphor supports five scoring strategies configured globally or per-virtual model:
+
+* **`priority`**: Evaluates targets in sequential order.
+* **`weighted-round-robin`**: Distributes queries proportionally to configured weights (e.g., 7:3 between two providers).
+* **`least-cost`**: Evaluates prompt tokens heuristic (~4 characters per token + framing overhead) and computes dollar cost:
   $$\text{Estimated Cost} = \frac{\text{PromptTokens}}{1,000,000} \times \text{Cost}_{\text{prompt}} + \frac{\text{EstCompletionTokens}}{1,000,000} \times \text{Cost}_{\text{completion}}$$
-  Candidates are dynamically sorted in ascending order of cost.
 * **`lowest-latency`**: Compares rolling Exponential Moving Average (EMA) of Time-To-First-Token (TTFT):
   $$\text{EMA}_{\text{new}} = (\alpha \times \text{TTFT}_{\text{observed}}) + ((1 - \alpha) \times \text{EMA}_{\text{prev}})$$
-  Routes each request to the provider demonstrating the lowest TTFT.
+* **`composite`**: Jointly optimizes for both cost and latency using min-max normalized candidate metrics:
+  $$S = w_{\text{cost}} \cdot \hat{C} + w_{\text{lat}} \cdot \hat{L}$$
+
+Providers in `Half-Open` state automatically receive a cooldown penalty (+10.0 score handicap) to prevent traffic thundering before health is fully established.
+
+### Model Capability Validation & Cross-Family Fallbacks
+* **Capability Validation**: Requests containing image URLs in messages, tool calls/function definitions, or `response_format: {"type": "json_object"}` are filtered against provider capabilities (`vision`, `tools`, `json`). Providers missing required capabilities are skipped.
+* **Fallback Model Groups**: If all targets within a primary virtual model group are exhausted or failing, Phosphor cascades to the configured `default_fallbacks` (e.g., falling back to `gpt-4o-mini`).
+
+### Exponential Backoff with Full Jitter
+Transient retries calculate backoff with full jitter to avoid synchronous provider thundering:
+$$t = \text{random}(0, \min(M, B \times 2^{\text{attempt}}))$$
+where $B$ is the initial backoff (default 100ms) and $M$ is the maximum backoff ceiling (default 2000ms).
+
+### High-Throughput Asynchronous SQLite Telemetry
+HTTP requests write telemetry events into a non-blocking bounded Go channel (capacity 4096). A background worker batches pending events and executes a single multi-row SQLite transaction in WAL mode every 100ms or 50 events. 
+All reading endpoints (`phosphor stats`, `phosphor logs`) call `db.Flush(ctx)` prior to querying to guarantee **Read-Your-Own-Writes** consistency without holding database locks on the request path. During graceful shutdown, the server invokes `db.Close()` which cleanly drains all buffered events.
+
+### Zero-Allocation SSE Streaming Pipeline
+The streaming engine uses a `sync.Pool` of reusable byte buffers for SSE chunk serialization, reducing memory overhead to ~1 alloc/op (595 ns/op).
+Client context cancellation is detected immediately via `r.Context().Done()`, immediately closing the upstream HTTP request to stop upstream token generation and avoid unnecessary billing.
 
 ---
 
 ## Testing
 
-Run unit tests and end-to-end integration tests:
+Run unit tests, integration tests, and race-detector stress tests:
 
 ```bash
 # Run all unit and integration tests
 go test -v ./...
+
+# Run race condition verification and stress tests
+go test -v -race ./test -run TestGateway_ConcurrentStressAndFailover
 ```
 
 ---
