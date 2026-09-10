@@ -573,6 +573,13 @@ func (s *Server) handleStreamingCompletions(w http.ResponseWriter, ctx context.C
 	var lastFinishReason string
 	var chunkCount int
 
+	idleTimeout := s.cfg.Server.StreamIdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = 30 * time.Second
+	}
+	idleTimer := time.NewTimer(idleTimeout)
+	defer idleTimer.Stop()
+
 streamLoop:
 	for {
 		select {
@@ -580,7 +587,31 @@ streamLoop:
 			clientAborted = true
 			log.Printf("[Phosphor] Client aborted stream connection for request %s\n", requestID)
 			break streamLoop
+
+		case <-idleTimer.C:
+			streamErr = fmt.Errorf("streaming idle timeout exceeded (%v)", idleTimeout)
+			log.Printf("[Phosphor] %s for request %s\n", streamErr.Error(), requestID)
+
+			errPayload, _ := json.Marshal(map[string]any{
+				"error": map[string]any{
+					"message": security.RedactText(streamErr.Error()),
+					"type":    "timeout_error",
+					"code":    "stream_idle_timeout",
+				},
+			})
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", errPayload)
+			flusher.Flush()
+			break streamLoop
+
 		case chunk, ok := <-streamResult.StreamChan:
+			if !idleTimer.Stop() {
+				select {
+				case <-idleTimer.C:
+				default:
+				}
+			}
+			idleTimer.Reset(idleTimeout)
+
 			if !ok {
 				break streamLoop
 			}
@@ -684,7 +715,11 @@ streamLoop:
 		statusCode = 499 // Client Closed Request
 		errorMsg = "client aborted stream connection"
 	} else if streamErr != nil {
-		statusCode = http.StatusBadGateway
+		if strings.Contains(streamErr.Error(), "timeout") {
+			statusCode = http.StatusGatewayTimeout
+		} else {
+			statusCode = http.StatusBadGateway
+		}
 		errorMsg = security.RedactText(streamErr.Error())
 	}
 

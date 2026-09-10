@@ -900,3 +900,68 @@ func TestServer_ChatCompletions_Streaming_UsageAndFinishReason(t *testing.T) {
 			recent[0].PromptTokens, recent[0].CompletionTokens, recent[0].TotalTokens)
 	}
 }
+
+func TestServer_ChatCompletions_Streaming_IdleTimeout(t *testing.T) {
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+
+		// 1. Send first chunk
+		fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-to1\",\"choices\":[{\"delta\":{\"content\":\"Chunk before stall\"}}]}\n\n")
+		flusher.Flush()
+
+		// 2. Stall longer than idle timeout
+		time.Sleep(200 * time.Millisecond)
+
+		// 3. Send chunk after timeout (should not be processed)
+		fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-to1\",\"choices\":[{\"delta\":{\"content\":\"Late chunk\"}}]}\n\n")
+		flusher.Flush()
+	})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	// Set short idle timeout
+	srv.cfg.Server.StreamIdleTimeout = 40 * time.Millisecond
+
+	reqBody := `{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"Timeout test"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(reqBody)))
+	req.Header.Set("Content-Type", "application/json")
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK headers, got %d", rr.Code)
+	}
+
+	bodyStr := rr.Body.String()
+	if !strings.Contains(bodyStr, "Chunk before stall") {
+		t.Errorf("expected body to contain chunk before stall, got: %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "stream_idle_timeout") {
+		t.Errorf("expected body to contain stream_idle_timeout error event, got: %s", bodyStr)
+	}
+	if strings.Contains(bodyStr, "Late chunk") {
+		t.Errorf("expected body NOT to contain late chunk, got: %s", bodyStr)
+	}
+	if strings.Contains(bodyStr, "data: [DONE]") {
+		t.Errorf("expected body NOT to contain [DONE] after idle timeout, got: %s", bodyStr)
+	}
+
+	// Verify database record has 504 Gateway Timeout status code
+	recent, err := dbInstance.GetRecentRequests(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("failed to query db: %v", err)
+	}
+	if len(recent) != 1 {
+		t.Fatalf("expected 1 logged request, got %d", len(recent))
+	}
+	if recent[0].StatusCode != http.StatusGatewayTimeout {
+		t.Errorf("expected StatusCode %d, got %d", http.StatusGatewayTimeout, recent[0].StatusCode)
+	}
+	if !strings.Contains(recent[0].ErrorMsg, "idle timeout exceeded") {
+		t.Errorf("expected ErrorMsg to contain idle timeout, got: %s", recent[0].ErrorMsg)
+	}
+}
+
