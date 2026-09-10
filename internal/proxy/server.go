@@ -317,9 +317,14 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	client, hasClient := auth.GetClientInfo(r.Context())
+
 	var models []ModelInfo
 	now := time.Now().Unix()
 	for m := range modelMap {
+		if hasClient && !client.CanAccessModel(m) {
+			continue
+		}
 		models = append(models, ModelInfo{
 			ID:      m,
 			Object:  "model",
@@ -366,6 +371,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(bodyBytes, &chatReq); err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, fmt.Sprintf("Invalid JSON: %s", err.Error()), "invalid_request_error", "invalid_json")
 		return
+	}
+
+	if client, ok := auth.GetClientInfo(r.Context()); ok {
+		if !client.CanAccessModel(chatReq.Model) {
+			writeOpenAIError(w, http.StatusForbidden, fmt.Sprintf("Your API key does not have permission to access model '%s'", chatReq.Model), "permission_error", "model_access_denied")
+			return
+		}
 	}
 
 	requestID := GetRequestID(r.Context())
@@ -422,7 +434,9 @@ func (s *Server) handleNonStreamingCompletions(w http.ResponseWriter, ctx contex
 	totalTokens := resp.Usage.TotalTokens
 	if promptTokens == 0 {
 		promptTokens = router.EstimatePromptTokens(req)
-		compTokens = len(resp.Choices[0].Message.Content) / 4
+		if len(resp.Choices) > 0 {
+			compTokens = len(resp.Choices[0].Message.Content) / 4
+		}
 		totalTokens = promptTokens + compTokens
 	}
 

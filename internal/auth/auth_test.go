@@ -145,3 +145,45 @@ func TestAuthenticate_SHA256HashedKeys(t *testing.T) {
 	}
 }
 
+func TestClientInfo_CanAccessModel(t *testing.T) {
+	// 1. Unrestricted access when AllowedModels is empty
+	unrestricted := ClientInfo{}
+	if !unrestricted.CanAccessModel("gpt-4o") {
+		t.Error("expected unrestricted client to access gpt-4o")
+	}
+
+	// 2. Specific exact models
+	restricted := ClientInfo{
+		AllowedModels: []string{"gpt-4o-mini", "llama-3.2"},
+	}
+	if !restricted.CanAccessModel("gpt-4o-mini") {
+		t.Error("expected access to gpt-4o-mini")
+	}
+	if restricted.CanAccessModel("gpt-4o") {
+		t.Error("expected restriction on gpt-4o")
+	}
+
+	// 3. Wildcard prefix pattern
+	wildcard := ClientInfo{
+		AllowedModels: []string{"gpt-*", "claude-*"},
+	}
+	if !wildcard.CanAccessModel("gpt-4o") {
+		t.Error("expected access to gpt-4o via gpt-*")
+	}
+	if !wildcard.CanAccessModel("gpt-4o-mini") {
+		t.Error("expected access to gpt-4o-mini via gpt-*")
+	}
+	if wildcard.CanAccessModel("llama-3.2") {
+		t.Error("expected restriction on llama-3.2")
+	}
+
+	// 4. Global wildcard *
+	allAccess := ClientInfo{
+		AllowedModels: []string{"*"},
+	}
+	if !allAccess.CanAccessModel("any-model") {
+		t.Error("expected * wildcard to access any model")
+	}
+}
+
+

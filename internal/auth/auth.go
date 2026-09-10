@@ -34,6 +34,31 @@ func GetClientInfo(ctx context.Context) (ClientInfo, bool) {
 	return client, ok
 }
 
+// CanAccessModel reports whether the client has permission to access the requested model.
+// If AllowedModels is empty, all models are permitted.
+// If AllowedModels contains patterns (e.g. "gpt-4o", "llama-*", "*"), they are matched.
+func (c *ClientInfo) CanAccessModel(model string) bool {
+	if len(c.AllowedModels) == 0 {
+		return true
+	}
+	for _, pattern := range c.AllowedModels {
+		p := strings.TrimSpace(pattern)
+		if p == "*" {
+			return true
+		}
+		if strings.EqualFold(p, model) {
+			return true
+		}
+		if strings.HasSuffix(p, "*") {
+			prefix := strings.TrimSuffix(p, "*")
+			if strings.HasPrefix(strings.ToLower(model), strings.ToLower(prefix)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // HashKey computes the hexadecimal-encoded SHA-256 digest of an API key.
 func HashKey(rawKey string) string {
 	sum := sha256.Sum256([]byte(rawKey))

@@ -574,5 +574,84 @@ func TestServer_AuthMiddleware(t *testing.T) {
 	}
 }
 
+func TestServer_ModelAccessControl(t *testing.T) {
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":      "chatcmpl-mock",
+			"choices": []any{},
+		})
+	})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	// Add an additional model to config
+	srv.cfg.Models["gpt-4o-mini"] = config.ModelRule{
+		Strategy: config.StrategyPriority,
+		Targets: []config.TargetModel{
+			{Provider: "mock-p", Model: "gpt-4o-mini"},
+		},
+	}
+
+	// Client has permission ONLY for gpt-4o-mini
+	srv.cfg.Auth = config.AuthConfig{
+		Enabled: true,
+		Keys: []config.APIKeyConfig{
+			{
+				Key:           "dev-client-token",
+				Name:          "dev-client",
+				AllowedModels: []string{"gpt-4o-mini"},
+			},
+		},
+	}
+
+	// 1. GET /v1/models should only list gpt-4o-mini for this client
+	reqModels := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	reqModels.Header.Set("Authorization", "Bearer dev-client-token")
+	rrModels := httptest.NewRecorder()
+	srv.ServeHTTP(rrModels, reqModels)
+
+	if rrModels.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", rrModels.Code)
+	}
+	var modelList ModelListResponse
+	if err := json.Unmarshal(rrModels.Body.Bytes(), &modelList); err != nil {
+		t.Fatalf("failed to decode models: %v", err)
+	}
+	if len(modelList.Data) != 1 || modelList.Data[0].ID != "gpt-4o-mini" {
+		t.Errorf("expected only gpt-4o-mini, got %+v", modelList.Data)
+	}
+
+	// 2. POST /v1/chat/completions requesting forbidden model (gpt-4o)
+	reqForbidden := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
+	reqForbidden.Header.Set("Authorization", "Bearer dev-client-token")
+	reqForbidden.Header.Set("Content-Type", "application/json")
+	rrForbidden := httptest.NewRecorder()
+	srv.ServeHTTP(rrForbidden, reqForbidden)
+
+	if rrForbidden.Code != http.StatusForbidden {
+		t.Errorf("expected 403 Forbidden, got %d: %s", rrForbidden.Code, rrForbidden.Body.String())
+	}
+	var errResp ErrorResponse
+	if err := json.Unmarshal(rrForbidden.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("failed to decode error: %v", err)
+	}
+	if errResp.Error.Code != "model_access_denied" {
+		t.Errorf("expected error code model_access_denied, got %s", errResp.Error.Code)
+	}
+
+	// 3. POST /v1/chat/completions requesting permitted model (gpt-4o-mini)
+	reqPermitted := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`))
+	reqPermitted.Header.Set("Authorization", "Bearer dev-client-token")
+	reqPermitted.Header.Set("Content-Type", "application/json")
+	rrPermitted := httptest.NewRecorder()
+	srv.ServeHTTP(rrPermitted, reqPermitted)
+
+	if rrPermitted.Code != http.StatusOK {
+		t.Errorf("expected 200 OK for permitted model, got %d: %s", rrPermitted.Code, rrPermitted.Body.String())
+	}
+}
+
+
 
 
