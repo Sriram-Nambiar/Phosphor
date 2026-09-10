@@ -10,6 +10,7 @@ import (
 	"github.com/Sriram-Nambiar/Phosphor/internal/config"
 	"github.com/Sriram-Nambiar/Phosphor/internal/db"
 	"github.com/Sriram-Nambiar/Phosphor/internal/provider"
+	"github.com/Sriram-Nambiar/Phosphor/internal/security"
 )
 
 type CandidateTarget struct {
@@ -293,7 +294,7 @@ func (r *Router) Execute(ctx context.Context, req *provider.ChatRequest, request
 				Timestamp:    time.Now().UTC(),
 				FromProvider: cand.ProviderName,
 				ToProvider:   nextCandidate.ProviderName,
-				Reason:       attemptErr.Error(),
+				Reason:       security.RedactText(attemptErr.Error()),
 				LatencyMs:    attemptLatency,
 			}
 			traces = append(traces, trace)
@@ -356,7 +357,7 @@ func (r *Router) ExecuteStream(ctx context.Context, req *provider.ChatRequest, r
 				Timestamp:    time.Now().UTC(),
 				FromProvider: cand.ProviderName,
 				ToProvider:   nextCandidate.ProviderName,
-				Reason:       attemptErr.Error(),
+				Reason:       security.RedactText(attemptErr.Error()),
 				LatencyMs:    attemptLatency,
 			}
 			traces = append(traces, trace)

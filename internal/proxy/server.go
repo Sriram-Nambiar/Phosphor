@@ -18,6 +18,7 @@ import (
 	"github.com/Sriram-Nambiar/Phosphor/internal/db"
 	"github.com/Sriram-Nambiar/Phosphor/internal/provider"
 	"github.com/Sriram-Nambiar/Phosphor/internal/router"
+	"github.com/Sriram-Nambiar/Phosphor/internal/security"
 	"github.com/google/uuid"
 )
 
@@ -420,11 +421,11 @@ func (s *Server) handleNonStreamingCompletions(w http.ResponseWriter, ctx contex
 				StatusCode:     statusCode,
 				LatencyMs:      latencyMs,
 				Stream:         false,
-				ErrorMsg:       err.Error(),
+				ErrorMsg:       security.RedactText(err.Error()),
 			})
 		}
 
-		writeOpenAIError(w, statusCode, err.Error(), errType, errCode)
+		writeOpenAIError(w, statusCode, security.RedactText(err.Error()), errType, errCode)
 		return
 	}
 
@@ -503,11 +504,11 @@ func (s *Server) handleStreamingCompletions(w http.ResponseWriter, ctx context.C
 				StatusCode:     statusCode,
 				LatencyMs:      latencyMs,
 				Stream:         true,
-				ErrorMsg:       err.Error(),
+				ErrorMsg:       security.RedactText(err.Error()),
 			})
 		}
 
-		writeOpenAIError(w, statusCode, err.Error(), errType, errCode)
+		writeOpenAIError(w, statusCode, security.RedactText(err.Error()), errType, errCode)
 		return
 	}
 
@@ -526,7 +527,7 @@ func (s *Server) handleStreamingCompletions(w http.ResponseWriter, ctx context.C
 
 	for chunk := range streamResult.StreamChan {
 		if chunk.Err != nil {
-			log.Printf("[Phosphor] Streaming chunk error: %v\n", chunk.Err)
+			log.Printf("[Phosphor] Streaming chunk error: %s\n", security.RedactText(chunk.Err.Error()))
 			break
 		}
 

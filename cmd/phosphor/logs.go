@@ -7,6 +7,7 @@ import (
 
 	"github.com/Sriram-Nambiar/Phosphor/internal/config"
 	"github.com/Sriram-Nambiar/Phosphor/internal/db"
+	"github.com/Sriram-Nambiar/Phosphor/internal/security"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/dustin/go-humanize"
 	"github.com/spf13/cobra"
@@ -92,7 +93,7 @@ func runLogs(cmd *cobra.Command, args []string) error {
 				reqIDShort,
 				cascade,
 				fmt.Sprintf("%.1f ms", f.LatencyMs),
-				errorStyle.Render(f.Reason),
+				errorStyle.Render(security.RedactText(f.Reason)),
 			)
 		}
 		fmt.Println()
