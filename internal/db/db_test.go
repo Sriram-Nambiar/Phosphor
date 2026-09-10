@@ -229,3 +229,73 @@ func TestDB_GetAggregateStats(t *testing.T) {
 		t.Errorf("provider breakdown mismatch: %+v", stats.ProviderStats)
 	}
 }
+
+func TestDB_AsyncQueue_BatchPersistence(t *testing.T) {
+	d, err := New(":memory:")
+	if err != nil {
+		t.Fatalf("failed to initialize db: %v", err)
+	}
+	defer d.Close()
+
+	ctx := context.Background()
+
+	// Enqueue 120 requests (larger than batchSize 50)
+	for i := 0; i < 120; i++ {
+		ok := d.EnqueueRequestLog(&RequestLog{
+			ModelRequested: "gpt-4o",
+			Provider:       "openai",
+			ModelRouted:    "gpt-4o",
+			StatusCode:     200,
+		})
+		if !ok {
+			t.Fatalf("failed to enqueue request log %d", i)
+		}
+	}
+
+	// Flush to commit all batches
+	if err := d.Flush(ctx); err != nil {
+		t.Fatalf("flush failed: %v", err)
+	}
+
+	stats, err := d.GetAggregateStats(ctx)
+	if err != nil {
+		t.Fatalf("failed to query stats: %v", err)
+	}
+	if stats.TotalRequests != 120 {
+		t.Errorf("expected 120 total requests in DB, got %d", stats.TotalRequests)
+	}
+}
+
+func TestDB_LogBatch(t *testing.T) {
+	d, err := New(":memory:")
+	if err != nil {
+		t.Fatalf("failed to initialize db: %v", err)
+	}
+	defer d.Close()
+
+	ctx := context.Background()
+
+	reqs := []*RequestLog{
+		{ModelRequested: "claude-3-5-sonnet", Provider: "anthropic", ModelRouted: "claude-3-5-sonnet", StatusCode: 200},
+		{ModelRequested: "llama3.2", Provider: "ollama", ModelRouted: "llama3.2", StatusCode: 200},
+	}
+	failovers := []*FailoverTrace{
+		{RequestID: "req-batch-1", FromProvider: "anthropic", ToProvider: "ollama", Reason: "503 service unavailable"},
+	}
+
+	if err := d.LogBatch(ctx, reqs, failovers); err != nil {
+		t.Fatalf("LogBatch failed: %v", err)
+	}
+
+	stats, err := d.GetAggregateStats(ctx)
+	if err != nil {
+		t.Fatalf("failed to get stats: %v", err)
+	}
+	if stats.TotalRequests != 2 {
+		t.Errorf("expected 2 requests, got %d", stats.TotalRequests)
+	}
+	if stats.TotalFailovers != 1 {
+		t.Errorf("expected 1 failover, got %d", stats.TotalFailovers)
+	}
+}
+

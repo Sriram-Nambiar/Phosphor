@@ -9,15 +9,26 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 )
 
+type asyncItem struct {
+	reqLog    *RequestLog
+	failover  *FailoverTrace
+	flushDone chan struct{}
+}
+
 type DB struct {
-	db *sql.DB
-	mu sync.RWMutex
+	db         *sql.DB
+	mu         sync.RWMutex
+	asyncQueue chan *asyncItem
+	wg         sync.WaitGroup
+	dropCount  atomic.Uint64
+	closed     atomic.Bool
 }
 
 type RequestLog struct {
@@ -163,10 +174,23 @@ func New(dbPath string) (*DB, error) {
 		return nil, fmt.Errorf("failed to apply database schema: %w", err)
 	}
 
-	return &DB{db: sqlDB}, nil
+	d := &DB{
+		db:         sqlDB,
+		asyncQueue: make(chan *asyncItem, 4096),
+	}
+	d.startWorker(50, 50*time.Millisecond)
+
+	return d, nil
 }
 
 func (d *DB) Close() error {
+	if d == nil {
+		return nil
+	}
+	if d.closed.CompareAndSwap(false, true) {
+		close(d.asyncQueue)
+		d.wg.Wait()
+	}
 	return d.db.Close()
 }
 
@@ -178,7 +202,235 @@ func (d *DB) Ping(ctx context.Context) error {
 	return d.db.PingContext(ctx)
 }
 
+// Flush ensures all pending telemetry events in the async queue are written to SQLite.
+func (d *DB) Flush(ctx context.Context) error {
+	if d == nil || d.closed.Load() {
+		return nil
+	}
+	done := make(chan struct{})
+	item := &asyncItem{flushDone: done}
+	select {
+	case d.asyncQueue <- item:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// QueueDepth returns the current number of pending items in the async queue.
+func (d *DB) QueueDepth() int {
+	if d == nil {
+		return 0
+	}
+	return len(d.asyncQueue)
+}
+
+// DroppedLogsCount returns the total number of logs dropped due to queue backpressure.
+func (d *DB) DroppedLogsCount() uint64 {
+	if d == nil {
+		return 0
+	}
+	return d.dropCount.Load()
+}
+
+func (d *DB) startWorker(batchSize int, flushInterval time.Duration) {
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		reqBatch := make([]*RequestLog, 0, batchSize)
+		failBatch := make([]*FailoverTrace, 0, batchSize)
+		ticker := time.NewTicker(flushInterval)
+		defer ticker.Stop()
+
+		flush := func() {
+			if len(reqBatch) == 0 && len(failBatch) == 0 {
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = d.LogBatch(ctx, reqBatch, failBatch)
+			cancel()
+			reqBatch = reqBatch[:0]
+			failBatch = failBatch[:0]
+		}
+
+		for {
+			select {
+			case item, ok := <-d.asyncQueue:
+				if !ok {
+					flush()
+					return
+				}
+				if item.flushDone != nil {
+					flush()
+					close(item.flushDone)
+					continue
+				}
+				if item.reqLog != nil {
+					reqBatch = append(reqBatch, item.reqLog)
+				}
+				if item.failover != nil {
+					failBatch = append(failBatch, item.failover)
+				}
+				if len(reqBatch) >= batchSize || len(failBatch) >= batchSize {
+					flush()
+				}
+			case <-ticker.C:
+				flush()
+			}
+		}
+	}()
+}
+
+// LogBatch inserts multiple request logs and failover traces in a single atomic transaction.
+func (d *DB) LogBatch(ctx context.Context, reqs []*RequestLog, failovers []*FailoverTrace) error {
+	if len(reqs) == 0 && len(failovers) == 0 {
+		return nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin batch transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if len(reqs) > 0 {
+		reqStmt, err := tx.PrepareContext(ctx, `
+INSERT INTO requests (
+    id, created_at, model_requested, provider, model_routed,
+    prompt_tokens, completion_tokens, total_tokens, estimated_cost,
+    latency_ms, ttft_ms, status_code, stream, error_msg
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+`)
+		if err != nil {
+			return fmt.Errorf("failed to prepare batch requests stmt: %w", err)
+		}
+		defer reqStmt.Close()
+
+		for _, r := range reqs {
+			if r.ID == "" {
+				r.ID = uuid.New().String()
+			}
+			if r.CreatedAt.IsZero() {
+				r.CreatedAt = time.Now().UTC()
+			}
+			streamInt := 0
+			if r.Stream {
+				streamInt = 1
+			}
+			_, err := reqStmt.ExecContext(ctx,
+				r.ID,
+				r.CreatedAt.Format(time.RFC3339Nano),
+				r.ModelRequested,
+				r.Provider,
+				r.ModelRouted,
+				r.PromptTokens,
+				r.CompletionTokens,
+				r.TotalTokens,
+				r.EstimatedCost,
+				r.LatencyMs,
+				r.TTFTMs,
+				r.StatusCode,
+				streamInt,
+				r.ErrorMsg,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to insert batched request log: %w", err)
+			}
+		}
+	}
+
+	if len(failovers) > 0 {
+		fStmt, err := tx.PrepareContext(ctx, `
+INSERT INTO failover_traces (
+    id, request_id, timestamp, from_provider, to_provider, reason, latency_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?);
+`)
+		if err != nil {
+			return fmt.Errorf("failed to prepare batch failover stmt: %w", err)
+		}
+		defer fStmt.Close()
+
+		for _, f := range failovers {
+			if f.ID == "" {
+				f.ID = uuid.New().String()
+			}
+			if f.Timestamp.IsZero() {
+				f.Timestamp = time.Now().UTC()
+			}
+			_, err := fStmt.ExecContext(ctx,
+				f.ID,
+				f.RequestID,
+				f.Timestamp.Format(time.RFC3339Nano),
+				f.FromProvider,
+				f.ToProvider,
+				f.Reason,
+				f.LatencyMs,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to insert batched failover trace: %w", err)
+			}
+		}
+	}
+
+	return tx.Commit()
+}
+
+// EnqueueRequestLog attempts non-blocking enqueue into the async telemetry queue.
+func (d *DB) EnqueueRequestLog(r *RequestLog) bool {
+	if d == nil || d.closed.Load() {
+		return false
+	}
+	item := &asyncItem{reqLog: r}
+	select {
+	case d.asyncQueue <- item:
+		return true
+	default:
+		d.dropCount.Add(1)
+		return false
+	}
+}
+
+// EnqueueFailover attempts non-blocking enqueue into the async telemetry queue.
+func (d *DB) EnqueueFailover(f *FailoverTrace) bool {
+	if d == nil || d.closed.Load() {
+		return false
+	}
+	item := &asyncItem{failover: f}
+	select {
+	case d.asyncQueue <- item:
+		return true
+	default:
+		d.dropCount.Add(1)
+		return false
+	}
+}
+
+// LogRequest logs a request asynchronously via the batch queue, falling back to sync on full queue.
 func (d *DB) LogRequest(ctx context.Context, r *RequestLog) error {
+	if d.EnqueueRequestLog(r) {
+		return nil
+	}
+	return d.LogRequestSync(ctx, r)
+}
+
+// LogFailover logs a failover trace asynchronously via the batch queue, falling back to sync on full queue.
+func (d *DB) LogFailover(ctx context.Context, f *FailoverTrace) error {
+	if d.EnqueueFailover(f) {
+		return nil
+	}
+	return d.LogFailoverSync(ctx, f)
+}
+
+// LogRequestSync synchronously inserts a request log into SQLite.
+func (d *DB) LogRequestSync(ctx context.Context, r *RequestLog) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -224,7 +476,8 @@ INSERT INTO requests (
 	return nil
 }
 
-func (d *DB) LogFailover(ctx context.Context, f *FailoverTrace) error {
+// LogFailoverSync synchronously inserts a failover trace into SQLite.
+func (d *DB) LogFailoverSync(ctx context.Context, f *FailoverTrace) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -320,6 +573,7 @@ WHERE provider = ? AND model = ?;`
 }
 
 func (d *DB) GetProviderMetrics(ctx context.Context) ([]ProviderMetric, error) {
+	_ = d.Flush(ctx)
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
@@ -345,6 +599,7 @@ func (d *DB) GetProviderMetrics(ctx context.Context) ([]ProviderMetric, error) {
 }
 
 func (d *DB) GetProviderMetric(ctx context.Context, provider, model string) (*ProviderMetric, error) {
+	_ = d.Flush(ctx)
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
@@ -364,6 +619,7 @@ func (d *DB) GetProviderMetric(ctx context.Context, provider, model string) (*Pr
 }
 
 func (d *DB) GetAggregateStats(ctx context.Context) (*AggregateStats, error) {
+	_ = d.Flush(ctx)
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
@@ -431,6 +687,7 @@ GROUP BY provider;`
 }
 
 func (d *DB) GetRecentRequests(ctx context.Context, limit int) ([]RequestLog, error) {
+	_ = d.Flush(ctx)
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
@@ -485,6 +742,7 @@ LIMIT ?;`
 }
 
 func (d *DB) GetRecentFailovers(ctx context.Context, limit int) ([]FailoverTrace, error) {
+	_ = d.Flush(ctx)
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
