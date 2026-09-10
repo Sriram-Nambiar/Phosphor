@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/Sriram-Nambiar/Phosphor/internal/config"
@@ -18,12 +19,30 @@ import (
 	"github.com/google/uuid"
 )
 
+type contextKey string
+
+const (
+	RequestIDKey contextKey = "request_id"
+)
+
+func GetRequestID(ctx context.Context) string {
+	if id, ok := ctx.Value(RequestIDKey).(string); ok && id != "" {
+		return id
+	}
+	return "chatcmpl-" + uuid.New().String()
+}
+
+func WithRequestID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, RequestIDKey, id)
+}
+
 type Server struct {
 	cfg      *config.Config
 	router   *router.Router
 	database *db.DB
 	server   *http.Server
 	mux      *http.ServeMux
+	handler  http.Handler
 }
 
 func NewServer(cfg *config.Config, r *router.Router, database *db.DB) *Server {
@@ -35,11 +54,12 @@ func NewServer(cfg *config.Config, r *router.Router, database *db.DB) *Server {
 	}
 
 	s.routes()
+	s.handler = s.requestIDMiddleware(s.corsMiddleware(s.mux))
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	s.server = &http.Server{
 		Addr:         addr,
-		Handler:      s.corsMiddleware(s.mux),
+		Handler:      s.handler,
 		ReadTimeout:  cfg.Server.ReadTimeout,
 		WriteTimeout: cfg.Server.WriteTimeout,
 	}
@@ -53,11 +73,23 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
 }
 
+func (s *Server) requestIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqID := strings.TrimSpace(r.Header.Get("X-Request-ID"))
+		if reqID == "" {
+			reqID = "chatcmpl-" + uuid.New().String()
+		}
+		w.Header().Set("X-Request-ID", reqID)
+		ctx := WithRequestID(r.Context(), reqID)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, x-api-key")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, x-api-key, X-Request-ID")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
@@ -78,7 +110,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.corsMiddleware(s.mux).ServeHTTP(w, r)
+	s.handler.ServeHTTP(w, r)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -181,7 +213,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	requestID := "chatcmpl-" + uuid.New().String()
+	requestID := GetRequestID(r.Context())
 
 	if chatReq.Stream {
 		s.handleStreamingCompletions(w, r.Context(), &chatReq, requestID)

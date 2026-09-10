@@ -239,3 +239,44 @@ func TestServer_RequestBodySizeLimit(t *testing.T) {
 		t.Fatalf("expected HTTP 413, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestServer_RequestIDMiddleware(t *testing.T) {
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id":"up-1","object":"chat.completion","choices":[{"message":{"content":"ok"}}]}`)
+	})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	// 1. Custom client X-Request-ID
+	reqBody := `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-ID", "custom-client-req-99")
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	respReqID := rr.Header().Get("X-Request-ID")
+	if respReqID != "custom-client-req-99" {
+		t.Errorf("expected X-Request-ID custom-client-req-99, got %s", respReqID)
+	}
+
+	recent, err := dbInstance.GetRecentRequests(req.Context(), 1)
+	if err != nil || len(recent) == 0 {
+		t.Fatalf("failed to get request from db: %v", err)
+	}
+	if recent[0].ID != "custom-client-req-99" {
+		t.Errorf("expected DB request ID custom-client-req-99, got %s", recent[0].ID)
+	}
+
+	// 2. Auto-generated X-Request-ID
+	req2 := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rr2 := httptest.NewRecorder()
+	srv.ServeHTTP(rr2, req2)
+
+	respReqID2 := rr2.Header().Get("X-Request-ID")
+	if !strings.HasPrefix(respReqID2, "chatcmpl-") {
+		t.Errorf("expected auto-generated request ID starting with chatcmpl-, got %s", respReqID2)
+	}
+}
