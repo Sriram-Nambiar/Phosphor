@@ -19,6 +19,7 @@ const (
 	StrategyLowestLatency      RoutingStrategy = "lowest-latency"
 	StrategyRoundRobin         RoutingStrategy = "round-robin"
 	StrategyWeightedRoundRobin RoutingStrategy = "weighted-round-robin"
+	StrategyComposite          RoutingStrategy = "composite"
 )
 
 type ProviderType string
@@ -80,6 +81,8 @@ type DatabaseConfig struct {
 type RoutingConfig struct {
 	DefaultStrategy RoutingStrategy `mapstructure:"default_strategy" yaml:"default_strategy"`
 	TimeoutSeconds  int             `mapstructure:"timeout_seconds" yaml:"timeout_seconds"`
+	CostWeight      float64         `mapstructure:"cost_weight" yaml:"cost_weight"`
+	LatencyWeight   float64         `mapstructure:"latency_weight" yaml:"latency_weight"`
 }
 
 type CircuitBreakerConfig struct {
@@ -151,6 +154,8 @@ func DefaultConfig() *Config {
 		Routing: RoutingConfig{
 			DefaultStrategy: StrategyPriority,
 			TimeoutSeconds:  30,
+			CostWeight:      0.5,
+			LatencyWeight:   0.5,
 		},
 		CircuitBreaker: CircuitBreakerConfig{
 			FailureThreshold: 3,
@@ -313,6 +318,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("database.path", dbPath)
 	v.SetDefault("routing.default_strategy", "priority")
 	v.SetDefault("routing.timeout_seconds", 30)
+	v.SetDefault("routing.cost_weight", 0.5)
+	v.SetDefault("routing.latency_weight", 0.5)
 	v.SetDefault("circuit_breaker.failure_threshold", 3)
 	v.SetDefault("circuit_breaker.cooldown_seconds", 30)
 }
@@ -368,10 +375,17 @@ func (c *Config) Validate() error {
 	}
 
 	switch c.Routing.DefaultStrategy {
-	case StrategyPriority, StrategyLeastCost, StrategyLowestLatency, StrategyRoundRobin, StrategyWeightedRoundRobin, "round_robin", "weighted_round_robin", "":
+	case StrategyPriority, StrategyLeastCost, StrategyLowestLatency, StrategyRoundRobin, StrategyWeightedRoundRobin, StrategyComposite, "balanced", "cost-latency", "round_robin", "weighted_round_robin", "":
 		// Valid strategy or default
 	default:
 		errs = append(errs, fmt.Sprintf("invalid routing.default_strategy '%s'", c.Routing.DefaultStrategy))
+	}
+
+	if c.Routing.CostWeight < 0 {
+		errs = append(errs, "routing.cost_weight cannot be negative")
+	}
+	if c.Routing.LatencyWeight < 0 {
+		errs = append(errs, "routing.latency_weight cannot be negative")
 	}
 
 	if c.CircuitBreaker.FailureThreshold < 0 {
@@ -415,7 +429,7 @@ func (c *Config) Validate() error {
 
 	for mName, rule := range c.Models {
 		switch rule.Strategy {
-		case StrategyPriority, StrategyLeastCost, StrategyLowestLatency, StrategyRoundRobin, StrategyWeightedRoundRobin, "round_robin", "weighted_round_robin", "":
+		case StrategyPriority, StrategyLeastCost, StrategyLowestLatency, StrategyRoundRobin, StrategyWeightedRoundRobin, StrategyComposite, "balanced", "cost-latency", "round_robin", "weighted_round_robin", "":
 			// Valid strategy
 		default:
 			errs = append(errs, fmt.Sprintf("models['%s'].strategy '%s' is invalid", mName, rule.Strategy))

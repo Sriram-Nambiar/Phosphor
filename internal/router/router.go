@@ -43,6 +43,15 @@ func NewRouter(cfg *config.Config, database *db.DB) (*Router, error) {
 		scorers:        DefaultScorerRegistry(),
 	}
 
+	// Configure custom composite scorer if specific weights are defined
+	if cfg.Routing.CostWeight > 0 || cfg.Routing.LatencyWeight > 0 {
+		comp := NewCompositeScorer(cfg.Routing.CostWeight, cfg.Routing.LatencyWeight)
+		r.scorers[config.StrategyComposite] = comp
+		r.scorers["composite"] = comp
+		r.scorers["balanced"] = comp
+		r.scorers["cost-latency"] = comp
+	}
+
 	// Initialize circuit breaker settings from config
 	threshold := cfg.CircuitBreaker.FailureThreshold
 	if threshold <= 0 {

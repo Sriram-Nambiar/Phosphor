@@ -34,9 +34,13 @@ type LeastCostScorer struct{}
 func (s *LeastCostScorer) Rank(candidates []CandidateTarget, ctx ScoringContext) []CandidateTarget {
 	ranked := make([]CandidateTarget, len(candidates))
 	copy(ranked, candidates)
+	tokens := ctx.EstimatedTokens
+	if tokens <= 0 {
+		tokens = 1000
+	}
 	sort.SliceStable(ranked, func(i, j int) bool {
-		costI := EstimateRequestCost(ctx.EstimatedTokens, ranked[i].Cost)
-		costJ := EstimateRequestCost(ctx.EstimatedTokens, ranked[j].Cost)
+		costI := EstimateRequestCost(tokens, ranked[i].Cost)
+		costJ := EstimateRequestCost(tokens, ranked[j].Cost)
 		return costI < costJ
 	})
 	return ranked
@@ -62,12 +66,16 @@ func (s *LowestLatencyScorer) Rank(candidates []CandidateTarget, ctx ScoringCont
 // DefaultScorerRegistry returns standard scorers for built-in strategies.
 func DefaultScorerRegistry() map[config.RoutingStrategy]CandidateScorer {
 	wrr := NewWeightedRoundRobinScorer()
+	composite := NewCompositeScorer(0.5, 0.5)
 	return map[config.RoutingStrategy]CandidateScorer{
 		config.StrategyPriority:           &PriorityScorer{},
 		config.StrategyLeastCost:          &LeastCostScorer{},
 		config.StrategyLowestLatency:      &LowestLatencyScorer{},
 		config.StrategyRoundRobin:         wrr,
 		config.StrategyWeightedRoundRobin: wrr,
+		config.StrategyComposite:          composite,
+		"balanced":                        composite,
+		"cost-latency":                    composite,
 		"round_robin":                     wrr,
 		"weighted_round_robin":            wrr,
 	}
