@@ -53,10 +53,14 @@ type Router struct {
 	semaphores     map[string]chan struct{}
 	latencyTracker *LatencyTracker
 	scorers        map[config.RoutingStrategy]CandidateScorer
+	backoff        *BackoffPolicy
 	mu             sync.RWMutex
 }
 
 func NewRouter(cfg *config.Config, database *db.DB) (*Router, error) {
+	initBackoff := time.Duration(cfg.Routing.InitialBackoffMs) * time.Millisecond
+	maxBackoff := time.Duration(cfg.Routing.MaxBackoffMs) * time.Millisecond
+
 	r := &Router{
 		cfg:            cfg,
 		database:       database,
@@ -65,6 +69,7 @@ func NewRouter(cfg *config.Config, database *db.DB) (*Router, error) {
 		semaphores:     make(map[string]chan struct{}),
 		latencyTracker: NewLatencyTracker(0.2),
 		scorers:        DefaultScorerRegistry(),
+		backoff:        NewBackoffPolicy(initBackoff, maxBackoff),
 	}
 
 	// Configure custom composite scorer if specific weights are defined
@@ -131,6 +136,20 @@ func (r *Router) GetCircuitBreaker(name string) (*CircuitBreaker, bool) {
 // GetLatencyTracker returns the router's latency tracker.
 func (r *Router) GetLatencyTracker() *LatencyTracker {
 	return r.latencyTracker
+}
+
+// GetBackoffPolicy returns the router's retry backoff policy.
+func (r *Router) GetBackoffPolicy() *BackoffPolicy {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.backoff
+}
+
+// SetBackoffPolicy overrides the router's backoff policy.
+func (r *Router) SetBackoffPolicy(b *BackoffPolicy) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.backoff = b
 }
 
 // RegisterScorer registers a candidate scorer for a routing strategy.
@@ -513,6 +532,11 @@ func (r *Router) Execute(ctx context.Context, req *provider.ChatRequest, request
 			if r.database != nil {
 				_ = r.database.LogFailover(ctx, &trace)
 			}
+
+			// Apply exponential backoff with full jitter on transient failure
+			if IsTransientFailure(attemptErr) && r.backoff != nil {
+				_ = r.backoff.Sleep(ctx, i)
+			}
 		}
 	}
 
@@ -607,6 +631,11 @@ func (r *Router) ExecuteStream(ctx context.Context, req *provider.ChatRequest, r
 			traces = append(traces, trace)
 			if r.database != nil {
 				_ = r.database.LogFailover(ctx, &trace)
+			}
+
+			// Apply exponential backoff with full jitter on transient failure
+			if IsTransientFailure(attemptErr) && r.backoff != nil {
+				_ = r.backoff.Sleep(ctx, i)
 			}
 		}
 	}

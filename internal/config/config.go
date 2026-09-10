@@ -84,6 +84,9 @@ type RoutingConfig struct {
 	CostWeight       float64         `mapstructure:"cost_weight" yaml:"cost_weight"`
 	LatencyWeight    float64         `mapstructure:"latency_weight" yaml:"latency_weight"`
 	DefaultFallbacks []string        `mapstructure:"default_fallbacks,omitempty" yaml:"default_fallbacks,omitempty"`
+	MaxRetries       int             `mapstructure:"max_retries" yaml:"max_retries"`
+	InitialBackoffMs int             `mapstructure:"initial_backoff_ms" yaml:"initial_backoff_ms"`
+	MaxBackoffMs     int             `mapstructure:"max_backoff_ms" yaml:"max_backoff_ms"`
 }
 
 type CircuitBreakerConfig struct {
@@ -156,10 +159,13 @@ func DefaultConfig() *Config {
 			Path: dbPath,
 		},
 		Routing: RoutingConfig{
-			DefaultStrategy: StrategyPriority,
-			TimeoutSeconds:  30,
-			CostWeight:      0.5,
-			LatencyWeight:   0.5,
+			DefaultStrategy:  StrategyPriority,
+			TimeoutSeconds:   30,
+			CostWeight:       0.5,
+			LatencyWeight:    0.5,
+			MaxRetries:       2,
+			InitialBackoffMs: 100,
+			MaxBackoffMs:     2000,
 		},
 		CircuitBreaker: CircuitBreakerConfig{
 			FailureThreshold: 3,
@@ -324,6 +330,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("routing.timeout_seconds", 30)
 	v.SetDefault("routing.cost_weight", 0.5)
 	v.SetDefault("routing.latency_weight", 0.5)
+	v.SetDefault("routing.max_retries", 2)
+	v.SetDefault("routing.initial_backoff_ms", 100)
+	v.SetDefault("routing.max_backoff_ms", 2000)
 	v.SetDefault("circuit_breaker.failure_threshold", 3)
 	v.SetDefault("circuit_breaker.cooldown_seconds", 30)
 }
@@ -390,6 +399,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Routing.LatencyWeight < 0 {
 		errs = append(errs, "routing.latency_weight cannot be negative")
+	}
+	if c.Routing.MaxRetries < 0 {
+		errs = append(errs, "routing.max_retries cannot be negative")
+	}
+	if c.Routing.InitialBackoffMs < 0 {
+		errs = append(errs, "routing.initial_backoff_ms cannot be negative")
+	}
+	if c.Routing.MaxBackoffMs < 0 {
+		errs = append(errs, "routing.max_backoff_ms cannot be negative")
 	}
 
 	if c.CircuitBreaker.FailureThreshold < 0 {
