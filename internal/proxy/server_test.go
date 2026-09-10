@@ -965,3 +965,41 @@ func TestServer_ChatCompletions_Streaming_IdleTimeout(t *testing.T) {
 	}
 }
 
+func TestServer_MetricsEndpoint(t *testing.T) {
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id":"cmpl-m","choices":[{"message":{"content":"ok"}}]}`)
+	})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	// 1. Initial GET /metrics
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for /metrics, got %d: %s", rr.Code, rr.Body.String())
+	}
+	contentType := rr.Header().Get("Content-Type")
+	if !strings.Contains(contentType, "text/plain") || !strings.Contains(contentType, "version=0.0.4") {
+		t.Errorf("unexpected metrics content type: %s", contentType)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "phosphor_up 1") {
+		t.Errorf("expected phosphor_up 1 in metrics")
+	}
+	if !strings.Contains(body, "phosphor_circuit_breaker_state{provider=\"mock-p\"} 0") {
+		t.Errorf("expected circuit breaker state in metrics: %s", body)
+	}
+
+	// 2. POST /metrics should return 405 Method Not Allowed
+	reqPost := httptest.NewRequest(http.MethodPost, "/metrics", nil)
+	rrPost := httptest.NewRecorder()
+	srv.ServeHTTP(rrPost, reqPost)
+	if rrPost.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 Method Not Allowed for POST /metrics, got %d", rrPost.Code)
+	}
+}
+
+

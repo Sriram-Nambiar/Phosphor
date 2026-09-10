@@ -133,6 +133,17 @@ func (r *Router) GetCircuitBreaker(name string) (*CircuitBreaker, bool) {
 	return cb, ok
 }
 
+// GetCircuitBreakers returns a copy of all provider circuit breakers.
+func (r *Router) GetCircuitBreakers() map[string]*CircuitBreaker {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	res := make(map[string]*CircuitBreaker, len(r.breakers))
+	for k, v := range r.breakers {
+		res[k] = v
+	}
+	return res
+}
+
 // GetLatencyTracker returns the router's latency tracker.
 func (r *Router) GetLatencyTracker() *LatencyTracker {
 	return r.latencyTracker

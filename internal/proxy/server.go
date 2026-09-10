@@ -98,6 +98,7 @@ func NewServer(cfg *config.Config, r *router.Router, database *db.DB) *Server {
 func (s *Server) routes() {
 	s.mux.HandleFunc("/health", s.handleHealth)
 	s.mux.HandleFunc("/ready", s.handleReady)
+	s.mux.HandleFunc("/metrics", s.handleMetrics)
 	s.mux.HandleFunc("/v1/models", s.handleModels)
 	s.mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
 }
@@ -173,7 +174,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Public endpoints that don't require authentication
-		if r.URL.Path == "/health" || r.URL.Path == "/ready" {
+		if r.URL.Path == "/health" || r.URL.Path == "/ready" || r.URL.Path == "/metrics" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -206,8 +207,8 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 func (s *Server) rateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Public health and readiness endpoints are never rate-limited
-		if r.URL.Path == "/health" || r.URL.Path == "/ready" {
+		// Public health, readiness, and metrics endpoints are never rate-limited
+		if r.URL.Path == "/health" || r.URL.Path == "/ready" || r.URL.Path == "/metrics" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -330,6 +331,117 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		resp["errors"] = issues
 	}
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "Method not allowed. Only GET is supported.", "invalid_request_error", "method_not_allowed")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	var buf strings.Builder
+
+	// 1. Process and gateway status
+	buf.WriteString("# HELP phosphor_up Whether the Phosphor gateway is up and running.\n")
+	buf.WriteString("# TYPE phosphor_up gauge\n")
+	buf.WriteString("phosphor_up 1\n\n")
+
+	// 2. Telemetry queue stats
+	queueDepth := 0
+	var droppedLogs uint64
+	if s.database != nil {
+		queueDepth = s.database.QueueDepth()
+		droppedLogs = s.database.DroppedLogsCount()
+	}
+	buf.WriteString("# HELP phosphor_telemetry_queue_depth Current number of items queued in async telemetry queue.\n")
+	buf.WriteString("# TYPE phosphor_telemetry_queue_depth gauge\n")
+	fmt.Fprintf(&buf, "phosphor_telemetry_queue_depth %d\n\n", queueDepth)
+
+	buf.WriteString("# HELP phosphor_telemetry_dropped_total Total number of dropped telemetry events due to backpressure.\n")
+	buf.WriteString("# TYPE phosphor_telemetry_dropped_total counter\n")
+	fmt.Fprintf(&buf, "phosphor_telemetry_dropped_total %d\n\n", droppedLogs)
+
+	// 3. Circuit breaker metrics
+	buf.WriteString("# HELP phosphor_circuit_breaker_state Current state of provider circuit breaker (0=closed, 1=half-open, 2=open).\n")
+	buf.WriteString("# TYPE phosphor_circuit_breaker_state gauge\n")
+	for name, cb := range s.router.GetCircuitBreakers() {
+		stateVal := 0
+		switch cb.GetState() {
+		case router.StateClosed:
+			stateVal = 0
+		case router.StateHalfOpen:
+			stateVal = 1
+		case router.StateOpen:
+			stateVal = 2
+		}
+		fmt.Fprintf(&buf, "phosphor_circuit_breaker_state{provider=%q} %d\n", name, stateVal)
+	}
+	buf.WriteString("\n")
+
+	// 4. Provider latency and TTFT metrics from database
+	if s.database != nil {
+		metrics, err := s.database.GetProviderMetrics(r.Context())
+		if err == nil && len(metrics) > 0 {
+			buf.WriteString("# HELP phosphor_provider_latency_ms Exponential moving average latency in milliseconds.\n")
+			buf.WriteString("# TYPE phosphor_provider_latency_ms gauge\n")
+			for _, m := range metrics {
+				fmt.Fprintf(&buf, "phosphor_provider_latency_ms{provider=%q,model=%q} %.2f\n", m.Provider, m.Model, m.EMALatencyMs)
+			}
+			buf.WriteString("\n")
+
+			buf.WriteString("# HELP phosphor_provider_ttft_ms Exponential moving average time to first token in milliseconds.\n")
+			buf.WriteString("# TYPE phosphor_provider_ttft_ms gauge\n")
+			for _, m := range metrics {
+				fmt.Fprintf(&buf, "phosphor_provider_ttft_ms{provider=%q,model=%q} %.2f\n", m.Provider, m.Model, m.EMATTFTMs)
+			}
+			buf.WriteString("\n")
+
+			buf.WriteString("# HELP phosphor_provider_requests_total Total requests routed to provider.\n")
+			buf.WriteString("# TYPE phosphor_provider_requests_total counter\n")
+			for _, m := range metrics {
+				fmt.Fprintf(&buf, "phosphor_provider_requests_total{provider=%q,model=%q} %d\n", m.Provider, m.Model, m.TotalRequests)
+			}
+			buf.WriteString("\n")
+
+			buf.WriteString("# HELP phosphor_provider_failures_total Total failed requests for provider.\n")
+			buf.WriteString("# TYPE phosphor_provider_failures_total counter\n")
+			for _, m := range metrics {
+				fmt.Fprintf(&buf, "phosphor_provider_failures_total{provider=%q,model=%q} %d\n", m.Provider, m.Model, m.TotalFailures)
+			}
+			buf.WriteString("\n")
+		}
+
+		// 5. Aggregate stats
+		stats, err := s.database.GetAggregateStats(r.Context())
+		if err == nil && stats != nil {
+			buf.WriteString("# HELP phosphor_requests_total Total requests processed by Phosphor.\n")
+			buf.WriteString("# TYPE phosphor_requests_total counter\n")
+			fmt.Fprintf(&buf, "phosphor_requests_total %d\n\n", stats.TotalRequests)
+
+			buf.WriteString("# HELP phosphor_prompt_tokens_total Total prompt tokens processed.\n")
+			buf.WriteString("# TYPE phosphor_prompt_tokens_total counter\n")
+			fmt.Fprintf(&buf, "phosphor_prompt_tokens_total %d\n\n", stats.TotalPromptTok)
+
+			buf.WriteString("# HELP phosphor_completion_tokens_total Total completion tokens generated.\n")
+			buf.WriteString("# TYPE phosphor_completion_tokens_total counter\n")
+			fmt.Fprintf(&buf, "phosphor_completion_tokens_total %d\n\n", stats.TotalCompTok)
+
+			buf.WriteString("# HELP phosphor_tokens_total Total tokens processed.\n")
+			buf.WriteString("# TYPE phosphor_tokens_total counter\n")
+			fmt.Fprintf(&buf, "phosphor_tokens_total %d\n\n", stats.TotalTokens)
+
+			buf.WriteString("# HELP phosphor_cost_dollars_total Total estimated cost in USD.\n")
+			buf.WriteString("# TYPE phosphor_cost_dollars_total counter\n")
+			fmt.Fprintf(&buf, "phosphor_cost_dollars_total %.6f\n\n", stats.TotalCost)
+
+			buf.WriteString("# HELP phosphor_failovers_total Total failovers between providers.\n")
+			buf.WriteString("# TYPE phosphor_failovers_total counter\n")
+			fmt.Fprintf(&buf, "phosphor_failovers_total %d\n\n", stats.TotalFailovers)
+		}
+	}
+
+	_, _ = w.Write([]byte(buf.String()))
 }
 
 type ModelInfo struct {
