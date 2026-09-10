@@ -18,6 +18,7 @@ type CandidateTarget struct {
 	Cost         config.CostConfig
 	Client       provider.Provider
 	Breaker      *CircuitBreaker
+	BreakerState CircuitState
 	Weight       int
 }
 
@@ -254,12 +255,18 @@ func (r *Router) ResolveCandidates(req *provider.ChatRequest) ([]CandidateTarget
 			weight = 1
 		}
 
+		var bState CircuitState = StateClosed
+		if cb != nil {
+			bState = cb.GetState()
+		}
+
 		candidates = append(candidates, CandidateTarget{
 			ProviderName: tm.Provider,
 			Model:        tm.Model,
 			Cost:         costCfg,
 			Client:       p,
 			Breaker:      cb,
+			BreakerState: bState,
 			Weight:       weight,
 		})
 	}
@@ -268,32 +275,53 @@ func (r *Router) ResolveCandidates(req *provider.ChatRequest) ([]CandidateTarget
 		return nil, strategy, fmt.Errorf("no active providers configured for model: %s", model)
 	}
 
-	// Filter by circuit breaker
-	var openBreakerCandidates []CandidateTarget
-	var eligibleCandidates []CandidateTarget
+	// Partition candidates by circuit breaker state:
+	// 1. Closed: fully healthy, preferred for primary traffic
+	// 2. Half-Open: recovering in cooldown, penalized so healthy providers are tried first
+	// 3. Open: tripped, used only if all providers are tripped
+	var closedCandidates []CandidateTarget
+	var halfOpenCandidates []CandidateTarget
+	var openCandidates []CandidateTarget
 
 	for _, c := range candidates {
-		if c.Breaker != nil && !c.Breaker.Allow() {
-			openBreakerCandidates = append(openBreakerCandidates, c)
+		if c.Breaker == nil {
+			closedCandidates = append(closedCandidates, c)
 		} else {
-			eligibleCandidates = append(eligibleCandidates, c)
+			state := c.Breaker.GetState()
+			c.BreakerState = state
+			switch state {
+			case StateClosed:
+				closedCandidates = append(closedCandidates, c)
+			case StateHalfOpen:
+				halfOpenCandidates = append(halfOpenCandidates, c)
+			case StateOpen:
+				openCandidates = append(openCandidates, c)
+			default:
+				closedCandidates = append(closedCandidates, c)
+			}
 		}
 	}
 
-	// If all candidates are tripped, fallback to all candidates to probe rather than hard-failing
-	finalCandidates := eligibleCandidates
-	if len(finalCandidates) == 0 {
-		finalCandidates = openBreakerCandidates
-	}
-
-	// Rank candidates according to strategy using pluggable scorer
+	// Rank each tier with the pluggable strategy scorer
 	estTokens := EstimatePromptTokens(req)
 	scorer := r.GetScorer(strategy)
-	finalCandidates = scorer.Rank(finalCandidates, ScoringContext{
+	sCtx := ScoringContext{
 		Request:         req,
 		EstimatedTokens: estTokens,
 		LatencyTracker:  r.latencyTracker,
-	})
+	}
+
+	var finalCandidates []CandidateTarget
+	if len(closedCandidates) > 0 {
+		finalCandidates = append(finalCandidates, scorer.Rank(closedCandidates, sCtx)...)
+	}
+	if len(halfOpenCandidates) > 0 {
+		finalCandidates = append(finalCandidates, scorer.Rank(halfOpenCandidates, sCtx)...)
+	}
+	if len(finalCandidates) == 0 && len(openCandidates) > 0 {
+		// All providers tripped; probe open candidates as last-resort fallback
+		finalCandidates = append(finalCandidates, scorer.Rank(openCandidates, sCtx)...)
+	}
 
 	return finalCandidates, strategy, nil
 }

@@ -378,3 +378,99 @@ func TestRouter_ConcurrencyLimitAndFailover(t *testing.T) {
 	}
 }
 
+func TestRouter_CircuitBreakerCooldownPenalty(t *testing.T) {
+	cfg := &config.Config{
+		Routing: config.RoutingConfig{DefaultStrategy: config.StrategyLeastCost},
+		CircuitBreaker: config.CircuitBreakerConfig{
+			FailureThreshold: 2,
+			CooldownSeconds:  1,
+		},
+		Providers: []config.ProviderConfig{
+			{
+				Name:    "cheap-recovering",
+				Type:    config.ProviderTypeOpenAI,
+				BaseURL: "http://localhost:8001",
+				Enabled: true,
+				Cost:    config.CostConfig{PromptCostPer1M: 1.0},
+			},
+			{
+				Name:    "expensive-healthy",
+				Type:    config.ProviderTypeOpenAI,
+				BaseURL: "http://localhost:8002",
+				Enabled: true,
+				Cost:    config.CostConfig{PromptCostPer1M: 20.0},
+			},
+		},
+		Models: map[string]config.ModelRule{
+			"model-test": {
+				Strategy: config.StrategyLeastCost,
+				Targets: []config.TargetModel{
+					{Provider: "cheap-recovering", Model: "model-test"},
+					{Provider: "expensive-healthy", Model: "model-test"},
+				},
+			},
+		},
+	}
+
+	r, err := NewRouter(cfg, nil)
+	if err != nil {
+		t.Fatalf("failed to create router: %v", err)
+	}
+
+	cbCheap, _ := r.GetCircuitBreaker("cheap-recovering")
+	mockNow := time.Now()
+	cbCheap.nowFunc = func() time.Time { return mockNow }
+
+	// Trip cheap-recovering into StateOpen
+	rateErr := &provider.HTTPError{StatusCode: 429, Provider: "cheap-recovering"}
+	cbCheap.RecordFailure(rateErr)
+	cbCheap.RecordFailure(rateErr)
+	if cbCheap.GetState() != StateOpen {
+		t.Fatalf("expected cheap-recovering to be OPEN, got %s", cbCheap.GetState())
+	}
+
+	// Advance time past cooldown so cheap-recovering transitions to StateHalfOpen
+	mockNow = mockNow.Add(2 * time.Second)
+	if cbCheap.GetState() != StateHalfOpen {
+		t.Fatalf("expected cheap-recovering to be HALF_OPEN, got %s", cbCheap.GetState())
+	}
+
+	// Resolve candidates: Even though cheap-recovering has lower cost, expensive-healthy is StateClosed
+	// so expensive-healthy MUST be ranked first!
+	req := &provider.ChatRequest{
+		Model: "model-test",
+		Messages: []provider.ChatMessage{
+			{Role: "user", Content: "test prompt"},
+		},
+	}
+	candidates, _, err := r.ResolveCandidates(req)
+	if err != nil {
+		t.Fatalf("failed to resolve candidates: %v", err)
+	}
+
+	if len(candidates) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(candidates))
+	}
+	if candidates[0].ProviderName != "expensive-healthy" {
+		t.Errorf("cooldown penalty expected healthy provider expensive-healthy first, got %s", candidates[0].ProviderName)
+	}
+	if candidates[1].ProviderName != "cheap-recovering" {
+		t.Errorf("expected recovering provider cheap-recovering second, got %s", candidates[1].ProviderName)
+	}
+
+	// Once cheap-recovering records success and resets to StateClosed, it should regain first place by cost!
+	cbCheap.RecordSuccess()
+	if cbCheap.GetState() != StateClosed {
+		t.Fatalf("expected cheap-recovering to be CLOSED after success, got %s", cbCheap.GetState())
+	}
+
+	candidatesRecovered, _, err := r.ResolveCandidates(req)
+	if err != nil {
+		t.Fatalf("failed to resolve candidates after recovery: %v", err)
+	}
+	if candidatesRecovered[0].ProviderName != "cheap-recovering" {
+		t.Errorf("expected recovered cheap-recovering to rank first by cost, got %s", candidatesRecovered[0].ProviderName)
+	}
+}
+
+

@@ -74,6 +74,11 @@ func (cb *CircuitBreaker) RecordSuccess() {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
+	now := cb.nowFunc()
+	if cb.state == StateOpen && now.Sub(cb.lastFailureTime) >= cb.cooldown {
+		cb.state = StateHalfOpen
+	}
+
 	if cb.state == StateHalfOpen {
 		cb.consecutiveSuccesses++
 		if cb.consecutiveSuccesses >= 1 {
