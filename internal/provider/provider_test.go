@@ -1,11 +1,14 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -274,3 +277,86 @@ func TestOllamaProvider_SendAndStream(t *testing.T) {
 		t.Errorf("expected final usage 15, got %+v", finalUsage)
 	}
 }
+
+func TestFormatAndWriteSSEChunk(t *testing.T) {
+	chunk := StreamChunk{
+		ID:      "chatcmpl-test",
+		Object:  "chat.completion.chunk",
+		Created: 1234567890,
+		Model:   "gpt-4o",
+		Choices: []StreamChoice{
+			{
+				Index: 0,
+				Delta: StreamDelta{
+					Content: "Hello world!",
+				},
+				FinishReason: "stop",
+			},
+		},
+	}
+
+	// 1. Test FormatSSEChunk
+	formatted, err := FormatSSEChunk(chunk)
+	if err != nil {
+		t.Fatalf("FormatSSEChunk failed: %v", err)
+	}
+	expectedPrefix := "data: {"
+	if !strings.HasPrefix(string(formatted), expectedPrefix) || !strings.HasSuffix(string(formatted), "\n\n") {
+		t.Errorf("unexpected SSE chunk format: %s", string(formatted))
+	}
+
+	// 2. Test WriteSSEChunk
+	var buf bytes.Buffer
+	if err := WriteSSEChunk(&buf, chunk); err != nil {
+		t.Fatalf("WriteSSEChunk failed: %v", err)
+	}
+	if !bytes.Equal(buf.Bytes(), formatted) {
+		t.Errorf("expected WriteSSEChunk and FormatSSEChunk to match:\nWrite:  %q\nFormat: %q", buf.String(), string(formatted))
+	}
+}
+
+func BenchmarkFormatSSEChunk(b *testing.B) {
+	chunk := StreamChunk{
+		ID:      "chatcmpl-bench",
+		Object:  "chat.completion.chunk",
+		Created: 1234567890,
+		Model:   "gpt-4o",
+		Choices: []StreamChoice{
+			{
+				Index: 0,
+				Delta: StreamDelta{
+					Content: "Streaming token benchmark payload",
+				},
+			},
+		},
+	}
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _ = FormatSSEChunk(chunk)
+	}
+}
+
+func BenchmarkWriteSSEChunk(b *testing.B) {
+	chunk := StreamChunk{
+		ID:      "chatcmpl-bench",
+		Object:  "chat.completion.chunk",
+		Created: 1234567890,
+		Model:   "gpt-4o",
+		Choices: []StreamChoice{
+			{
+				Index: 0,
+				Delta: StreamDelta{
+					Content: "Streaming token benchmark payload",
+				},
+			},
+		},
+	}
+	w := io.Discard
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = WriteSSEChunk(w, chunk)
+	}
+}
+

@@ -1,10 +1,13 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
+	"sync"
 
 	"github.com/Sriram-Nambiar/Phosphor/internal/config"
 )
@@ -167,11 +170,49 @@ func IsServerError(err error) bool {
 	return false
 }
 
-// FormatSSEChunk converts a StreamChunk into standard SSE data line: "data: {json}\n\n"
+var sseBufferPool = sync.Pool{
+	New: func() any {
+		return bytes.NewBuffer(make([]byte, 0, 512))
+	},
+}
+
+var sseDataPrefix = []byte("data: ")
+
+// WriteSSEChunk serializes and writes an SSE event directly to w using a pooled buffer,
+// avoiding heap allocations and redundant slice copies.
+func WriteSSEChunk(w io.Writer, chunk StreamChunk) error {
+	buf := sseBufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer sseBufferPool.Put(buf)
+
+	buf.Write(sseDataPrefix)
+	enc := json.NewEncoder(buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(chunk); err != nil {
+		return err
+	}
+	buf.WriteByte('\n')
+
+	_, err := w.Write(buf.Bytes())
+	return err
+}
+
+// FormatSSEChunk converts a StreamChunk into standard SSE data line: "data: {json}\n\n" using buffer pooling.
 func FormatSSEChunk(chunk StreamChunk) ([]byte, error) {
-	data, err := json.Marshal(chunk)
-	if err != nil {
+	buf := sseBufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer sseBufferPool.Put(buf)
+
+	buf.Write(sseDataPrefix)
+	enc := json.NewEncoder(buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(chunk); err != nil {
 		return nil, err
 	}
-	return []byte(fmt.Sprintf("data: %s\n\n", data)), nil
+	buf.WriteByte('\n')
+
+	res := make([]byte, buf.Len())
+	copy(res, buf.Bytes())
+	return res, nil
 }
+

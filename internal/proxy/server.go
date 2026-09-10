@@ -655,14 +655,11 @@ streamLoop:
 				finalUsage = chunk.Usage
 			}
 
-			sseData, err := provider.FormatSSEChunk(chunk)
-			if err == nil {
-				if _, err := w.Write(sseData); err != nil {
-					clientAborted = true
-					break streamLoop
-				}
-				flusher.Flush()
+			if err := provider.WriteSSEChunk(w, chunk); err != nil {
+				clientAborted = true
+				break streamLoop
 			}
+			flusher.Flush()
 		}
 	}
 
@@ -695,8 +692,7 @@ streamLoop:
 				TotalTokens:      totalTokens,
 			},
 		}
-		if sseData, err := provider.FormatSSEChunk(usageChunk); err == nil {
-			_, _ = w.Write(sseData)
+		if err := provider.WriteSSEChunk(w, usageChunk); err == nil {
 			flusher.Flush()
 		}
 	}
