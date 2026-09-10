@@ -567,9 +567,21 @@ func (s *Server) handleStreamingCompletions(w http.ResponseWriter, ctx context.C
 	var completionChars int
 	var finalUsage *provider.Usage
 
+	var streamErr error
 	for chunk := range streamResult.StreamChan {
 		if chunk.Err != nil {
+			streamErr = chunk.Err
 			log.Printf("[Phosphor] Streaming chunk error: %s\n", security.RedactText(chunk.Err.Error()))
+
+			errPayload, _ := json.Marshal(map[string]any{
+				"error": map[string]any{
+					"message": security.RedactText(chunk.Err.Error()),
+					"type":    "upstream_error",
+					"code":    "stream_interrupted",
+				},
+			})
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", errPayload)
+			flusher.Flush()
 			break
 		}
 
@@ -599,9 +611,11 @@ func (s *Server) handleStreamingCompletions(w http.ResponseWriter, ctx context.C
 		}
 	}
 
-	// Terminate SSE stream
-	_, _ = w.Write([]byte("data: [DONE]\n\n"))
-	flusher.Flush()
+	if streamErr == nil {
+		// Terminate SSE stream normally
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		flusher.Flush()
+	}
 
 	totalLatencyMs := float64(time.Since(start).Microseconds()) / 1000.0
 
@@ -618,7 +632,14 @@ func (s *Server) handleStreamingCompletions(w http.ResponseWriter, ctx context.C
 	totalTokens := promptTokens + compTokens
 	cost := router.CalculateCost(promptTokens, compTokens, streamResult.Candidate.Cost)
 
-	// Log completed stream telemetry
+	statusCode := http.StatusOK
+	var errorMsg string
+	if streamErr != nil {
+		statusCode = http.StatusBadGateway
+		errorMsg = security.RedactText(streamErr.Error())
+	}
+
+	// Log completed or failed stream telemetry
 	if s.database != nil {
 		logCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -634,8 +655,9 @@ func (s *Server) handleStreamingCompletions(w http.ResponseWriter, ctx context.C
 			EstimatedCost:    cost,
 			LatencyMs:        totalLatencyMs,
 			TTFTMs:           ttftMs,
-			StatusCode:       http.StatusOK,
+			StatusCode:       statusCode,
 			Stream:           true,
+			ErrorMsg:         errorMsg,
 		})
 	}
 }

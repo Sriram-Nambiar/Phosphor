@@ -187,6 +187,20 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan S
 				return
 			}
 
+			if strings.Contains(data, `"error"`) {
+				var errResp struct {
+					Error struct {
+						Message string `json:"message"`
+						Type    string `json:"type"`
+						Code    any    `json:"code"`
+					} `json:"error"`
+				}
+				if err := json.Unmarshal([]byte(data), &errResp); err == nil && errResp.Error.Message != "" {
+					ch <- StreamChunk{Err: fmt.Errorf("upstream stream error: %s", errResp.Error.Message)}
+					return
+				}
+			}
+
 			var chunk StreamChunk
 			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 				ch <- StreamChunk{Err: fmt.Errorf("failed to parse SSE chunk: %w", err)}

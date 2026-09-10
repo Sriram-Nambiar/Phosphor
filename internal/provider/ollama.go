@@ -86,6 +86,7 @@ type ollamaChatResponse struct {
 	TotalDuration   int64         `json:"total_duration"`
 	PromptEvalCount int           `json:"prompt_eval_count"`
 	EvalCount       int           `json:"eval_count"`
+	Error           string        `json:"error,omitempty"`
 }
 
 func (p *OllamaProvider) Send(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
@@ -257,6 +258,11 @@ func (p *OllamaProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan S
 			var oResp ollamaChatResponse
 			if err := json.Unmarshal([]byte(line), &oResp); err != nil {
 				continue
+			}
+
+			if oResp.Error != "" {
+				ch <- StreamChunk{Err: fmt.Errorf("ollama stream error: %s", oResp.Error)}
+				return
 			}
 
 			finishReason := ""

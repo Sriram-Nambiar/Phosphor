@@ -728,7 +728,57 @@ func TestServer_RateLimiting(t *testing.T) {
 	}
 }
 
+func TestServer_ChatCompletions_Streaming_MidStreamError(t *testing.T) {
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
 
+		// 1. Send good chunk
+		fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-err1\",\"choices\":[{\"delta\":{\"content\":\"Halfway done\"}}]}\n\n")
+		flusher.Flush()
 
+		// 2. Send mid-stream error frame
+		fmt.Fprintf(w, "data: {\"error\":{\"message\":\"Midstream token generation failed\",\"type\":\"server_error\"}}\n\n")
+		flusher.Flush()
+	})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
 
+	reqBody := `{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"Stream error test"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(reqBody)))
+	req.Header.Set("Content-Type", "application/json")
 
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK headers initially, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	bodyStr := rr.Body.String()
+	if !strings.Contains(bodyStr, "Halfway done") {
+		t.Errorf("expected body to contain initial chunk 'Halfway done', got: %s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "stream_interrupted") || !strings.Contains(bodyStr, "Midstream token generation failed") {
+		t.Errorf("expected body to contain SSE error event with stream_interrupted, got: %s", bodyStr)
+	}
+	if strings.Contains(bodyStr, "data: [DONE]") {
+		t.Errorf("expected body NOT to contain [DONE] on mid-stream error, got: %s", bodyStr)
+	}
+
+	// Verify database record has 502 status code and error message
+	recent, err := dbInstance.GetRecentRequests(req.Context(), 10)
+	if err != nil {
+		t.Fatalf("failed to query db: %v", err)
+	}
+	if len(recent) != 1 {
+		t.Fatalf("expected 1 logged request, got %d", len(recent))
+	}
+	if recent[0].StatusCode != http.StatusBadGateway {
+		t.Errorf("expected StatusCode %d, got %d", http.StatusBadGateway, recent[0].StatusCode)
+	}
+	if !strings.Contains(recent[0].ErrorMsg, "Midstream token generation failed") {
+		t.Errorf("expected ErrorMsg to contain upstream failure, got: %s", recent[0].ErrorMsg)
+	}
+}

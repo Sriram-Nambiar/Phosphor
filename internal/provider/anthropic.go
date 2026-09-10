@@ -355,6 +355,16 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *ChatRequest) (<-cha
 
 				case "message_stop":
 					return
+
+				case "error":
+					errMsg := "upstream stream error"
+					if errObj, ok := eventMap["error"].(map[string]interface{}); ok {
+						if m, ok := errObj["message"].(string); ok {
+							errMsg = m
+						}
+					}
+					ch <- StreamChunk{Err: fmt.Errorf("anthropic stream error: %s", errMsg)}
+					return
 				}
 			}
 		}
