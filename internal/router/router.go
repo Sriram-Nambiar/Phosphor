@@ -213,51 +213,8 @@ func (r *Router) findProviderConfig(name string) (config.ProviderConfig, bool) {
 	return config.ProviderConfig{}, false
 }
 
-// ResolveCandidates builds and ranks eligible candidates for a given requested model.
-func (r *Router) ResolveCandidates(req *provider.ChatRequest) ([]CandidateTarget, config.RoutingStrategy, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	model := req.Model
-	var targets []config.TargetModel
-	var strategy config.RoutingStrategy = r.cfg.Routing.DefaultStrategy
-	if strategy == "" {
-		strategy = config.StrategyPriority
-	}
-
-	// 1. Check explicit model configuration rule
-	if rule, exists := r.cfg.Models[model]; exists {
-		targets = rule.Targets
-		if rule.Strategy != "" {
-			strategy = rule.Strategy
-		}
-	} else {
-		// 2. Check providers supporting this model directly
-		for name, p := range r.providers {
-			if p.SupportsModel(model) {
-				targets = append(targets, config.TargetModel{
-					Provider: name,
-					Model:    model,
-				})
-			}
-		}
-
-		// 3. Fall back to default model rule if no direct support
-		if len(targets) == 0 {
-			if defRule, ok := r.cfg.Models["default"]; ok {
-				targets = defRule.Targets
-				if defRule.Strategy != "" {
-					strategy = defRule.Strategy
-				}
-			}
-		}
-	}
-
-	if len(targets) == 0 {
-		return nil, strategy, fmt.Errorf("no provider targets available for model: %s", model)
-	}
-
-	// Build candidate list
+// buildCandidatesForTargets converts target models to candidate targets, populating cost, circuit breakers, and capabilities.
+func (r *Router) buildCandidatesForTargets(targets []config.TargetModel) []CandidateTarget {
 	var candidates []CandidateTarget
 	for _, tm := range targets {
 		p, hasProv := r.providers[tm.Provider]
@@ -299,45 +256,37 @@ func (r *Router) ResolveCandidates(req *provider.ChatRequest) ([]CandidateTarget
 			Capabilities: caps,
 		})
 	}
+	return candidates
+}
 
-	if len(candidates) == 0 {
-		return nil, strategy, fmt.Errorf("no active providers configured for model: %s", model)
-	}
-
-	// Filter candidates by required capabilities (vision, tools, json_mode)
+// filterAndRankCandidates filters candidates by capabilities and ranks them using the strategy scorer with breaker cooldown penalty.
+func (r *Router) filterAndRankCandidates(candidates []CandidateTarget, req *provider.ChatRequest, strategy config.RoutingStrategy) []CandidateTarget {
 	reqVision := req.RequiresVision()
 	reqTools := req.RequiresTools()
 	reqJSON := req.RequiresJSONMode()
 
-	if reqVision || reqTools || reqJSON {
-		var capableCandidates []CandidateTarget
-		for _, c := range candidates {
-			if reqVision && !c.SupportsCapability("vision") {
-				continue
-			}
-			if reqTools && !c.SupportsCapability("tools") {
-				continue
-			}
-			if reqJSON && !c.SupportsCapability("json_mode") {
-				continue
-			}
-			capableCandidates = append(capableCandidates, c)
+	var capable []CandidateTarget
+	for _, c := range candidates {
+		if reqVision && !c.SupportsCapability("vision") {
+			continue
 		}
-		if len(capableCandidates) == 0 {
-			return nil, strategy, fmt.Errorf("no targets available for model '%s' satisfying required capabilities (vision=%v, tools=%v, json_mode=%v)", model, reqVision, reqTools, reqJSON)
+		if reqTools && !c.SupportsCapability("tools") {
+			continue
 		}
-		candidates = capableCandidates
+		if reqJSON && !c.SupportsCapability("json_mode") {
+			continue
+		}
+		capable = append(capable, c)
+	}
+	if len(capable) == 0 {
+		return nil
 	}
 
-	// Partition candidates by circuit breaker state:
-	// 1. Closed: fully healthy, preferred for primary traffic
-	// 2. Half-Open: recovering in cooldown, penalized so healthy providers are tried first
-	// 3. Open: tripped, used only if all providers are tripped
 	var closedCandidates []CandidateTarget
 	var halfOpenCandidates []CandidateTarget
 	var openCandidates []CandidateTarget
 
-	for _, c := range candidates {
+	for _, c := range capable {
 		if c.Breaker == nil {
 			closedCandidates = append(closedCandidates, c)
 		} else {
@@ -356,7 +305,6 @@ func (r *Router) ResolveCandidates(req *provider.ChatRequest) ([]CandidateTarget
 		}
 	}
 
-	// Rank each tier with the pluggable strategy scorer
 	estTokens := EstimatePromptTokens(req)
 	scorer := r.GetScorer(strategy)
 	sCtx := ScoringContext{
@@ -365,16 +313,112 @@ func (r *Router) ResolveCandidates(req *provider.ChatRequest) ([]CandidateTarget
 		LatencyTracker:  r.latencyTracker,
 	}
 
-	var finalCandidates []CandidateTarget
+	var ranked []CandidateTarget
 	if len(closedCandidates) > 0 {
-		finalCandidates = append(finalCandidates, scorer.Rank(closedCandidates, sCtx)...)
+		ranked = append(ranked, scorer.Rank(closedCandidates, sCtx)...)
 	}
 	if len(halfOpenCandidates) > 0 {
-		finalCandidates = append(finalCandidates, scorer.Rank(halfOpenCandidates, sCtx)...)
+		ranked = append(ranked, scorer.Rank(halfOpenCandidates, sCtx)...)
 	}
-	if len(finalCandidates) == 0 && len(openCandidates) > 0 {
-		// All providers tripped; probe open candidates as last-resort fallback
-		finalCandidates = append(finalCandidates, scorer.Rank(openCandidates, sCtx)...)
+	if len(ranked) == 0 && len(openCandidates) > 0 {
+		ranked = append(ranked, scorer.Rank(openCandidates, sCtx)...)
+	}
+	return ranked
+}
+
+// ResolveCandidates builds and ranks eligible candidates for a given requested model, including cross-family fallbacks.
+func (r *Router) ResolveCandidates(req *provider.ChatRequest) ([]CandidateTarget, config.RoutingStrategy, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	model := req.Model
+	var targets []config.TargetModel
+	var fallbacks []string
+	var strategy config.RoutingStrategy = r.cfg.Routing.DefaultStrategy
+	if strategy == "" {
+		strategy = config.StrategyPriority
+	}
+
+	// 1. Check explicit model configuration rule
+	if rule, exists := r.cfg.Models[model]; exists {
+		targets = rule.Targets
+		fallbacks = rule.Fallbacks
+		if rule.Strategy != "" {
+			strategy = rule.Strategy
+		}
+	} else {
+		// 2. Check providers supporting this model directly
+		for name, p := range r.providers {
+			if p.SupportsModel(model) {
+				targets = append(targets, config.TargetModel{
+					Provider: name,
+					Model:    model,
+				})
+			}
+		}
+
+		// 3. Fall back to default model rule if no direct support
+		if len(targets) == 0 {
+			if defRule, ok := r.cfg.Models["default"]; ok {
+				targets = defRule.Targets
+				fallbacks = defRule.Fallbacks
+				if defRule.Strategy != "" {
+					strategy = defRule.Strategy
+				}
+			}
+		}
+	}
+
+	if len(fallbacks) == 0 {
+		fallbacks = r.cfg.Routing.DefaultFallbacks
+	}
+
+	primaryCandidates := r.buildCandidatesForTargets(targets)
+	rankedPrimary := r.filterAndRankCandidates(primaryCandidates, req, strategy)
+
+	seen := make(map[string]bool)
+	var finalCandidates []CandidateTarget
+
+	for _, c := range rankedPrimary {
+		key := candidateKey(c)
+		seen[key] = true
+		finalCandidates = append(finalCandidates, c)
+	}
+
+	// Resolve fallback model groups if configured
+	for _, fbModel := range fallbacks {
+		if fbModel == model {
+			continue
+		}
+		var fbTargets []config.TargetModel
+		if fbRule, ok := r.cfg.Models[fbModel]; ok {
+			fbTargets = fbRule.Targets
+		} else {
+			for name, p := range r.providers {
+				if p.SupportsModel(fbModel) {
+					fbTargets = append(fbTargets, config.TargetModel{
+						Provider: name,
+						Model:    fbModel,
+					})
+				}
+			}
+		}
+		fbCandidates := r.buildCandidatesForTargets(fbTargets)
+		rankedFB := r.filterAndRankCandidates(fbCandidates, req, strategy)
+		for _, c := range rankedFB {
+			key := candidateKey(c)
+			if !seen[key] {
+				seen[key] = true
+				finalCandidates = append(finalCandidates, c)
+			}
+		}
+	}
+
+	if len(finalCandidates) == 0 {
+		if len(primaryCandidates) == 0 && len(fallbacks) == 0 {
+			return nil, strategy, fmt.Errorf("no provider targets available for model: %s", model)
+		}
+		return nil, strategy, fmt.Errorf("no available provider targets for model '%s' (including %d fallback groups) satisfy requirements", model, len(fallbacks))
 	}
 
 	return finalCandidates, strategy, nil

@@ -1,0 +1,121 @@
+package router
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/Sriram-Nambiar/Phosphor/internal/config"
+	"github.com/Sriram-Nambiar/Phosphor/internal/provider"
+)
+
+func TestRouter_CrossFamilyFallbackModelGroups(t *testing.T) {
+	// 1. Primary server (OpenAI gpt-4o) fails with 500
+	primarySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error":{"message":"Internal outage"}}`))
+	}))
+	defer primarySrv.Close()
+
+	// 2. Fallback server (Anthropic claude-3-5-sonnet) succeeds
+	fallbackSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"id": "chatcmpl-fallback",
+			"object": "chat.completion",
+			"created": 123456789,
+			"model": "claude-3-5-sonnet",
+			"choices": [{
+				"index": 0,
+				"message": {"role": "assistant", "content": "Hello from Claude fallback!"},
+				"finish_reason": "stop"
+			}],
+			"usage": {"prompt_tokens": 10, "completion_tokens": 15, "total_tokens": 25}
+		}`))
+	}))
+	defer fallbackSrv.Close()
+
+	cfg := &config.Config{
+		Routing: config.RoutingConfig{DefaultStrategy: config.StrategyPriority},
+		Providers: []config.ProviderConfig{
+			{
+				Name:    "openai-primary",
+				Type:    config.ProviderTypeOpenAI,
+				BaseURL: primarySrv.URL,
+				Enabled: true,
+			},
+			{
+				Name:    "anthropic-fallback",
+				Type:    config.ProviderTypeOpenAI,
+				BaseURL: fallbackSrv.URL,
+				Enabled: true,
+			},
+		},
+		Models: map[string]config.ModelRule{
+			"gpt-4o": {
+				Strategy: config.StrategyPriority,
+				Targets: []config.TargetModel{
+					{Provider: "openai-primary", Model: "gpt-4o"},
+				},
+				Fallbacks: []string{"claude-3-5-sonnet"},
+			},
+			"claude-3-5-sonnet": {
+				Strategy: config.StrategyPriority,
+				Targets: []config.TargetModel{
+					{Provider: "anthropic-fallback", Model: "claude-3-5-sonnet"},
+				},
+			},
+		},
+	}
+
+	r, err := NewRouter(cfg, nil)
+	if err != nil {
+		t.Fatalf("failed to create router: %v", err)
+	}
+
+	req := &provider.ChatRequest{
+		Model: "gpt-4o",
+		Messages: []provider.ChatMessage{
+			{Role: "user", Content: "Hello gateway"},
+		},
+	}
+
+	// Verify candidate list has primary gpt-4o followed by fallback claude-3-5-sonnet
+	cands, _, err := r.ResolveCandidates(req)
+	if err != nil {
+		t.Fatalf("failed to resolve candidates: %v", err)
+	}
+	if len(cands) != 2 {
+		t.Fatalf("expected 2 candidates, got %d", len(cands))
+	}
+	if cands[0].ProviderName != "openai-primary" || cands[0].Model != "gpt-4o" {
+		t.Errorf("expected primary candidate openai-primary/gpt-4o, got %+v", cands[0])
+	}
+	if cands[1].ProviderName != "anthropic-fallback" || cands[1].Model != "claude-3-5-sonnet" {
+		t.Errorf("expected fallback candidate anthropic-fallback/claude-3-5-sonnet, got %+v", cands[1])
+	}
+
+	// Execute request -> primary fails, automatically fails over to fallback!
+	res, err := r.Execute(context.Background(), req, "req-fallback-test")
+	if err != nil {
+		t.Fatalf("expected failover to succeed, got error: %v", err)
+	}
+
+	if res.Candidate.ProviderName != "anthropic-fallback" {
+		t.Errorf("expected successful execution on anthropic-fallback, got %s", res.Candidate.ProviderName)
+	}
+	if res.Response == nil || len(res.Response.Choices) == 0 {
+		t.Fatal("expected non-empty choices from fallback response")
+	}
+	if res.Response.Choices[0].Message.Content != "Hello from Claude fallback!" {
+		t.Errorf("unexpected response content: %s", res.Response.Choices[0].Message.Content)
+	}
+	if len(res.FailoverTraces) != 1 {
+		t.Fatalf("expected 1 failover trace, got %d", len(res.FailoverTraces))
+	}
+	if res.FailoverTraces[0].FromProvider != "openai-primary" || res.FailoverTraces[0].ToProvider != "anthropic-fallback" {
+		t.Errorf("unexpected failover trace: %+v", res.FailoverTraces[0])
+	}
+}

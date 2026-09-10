@@ -79,10 +79,11 @@ type DatabaseConfig struct {
 }
 
 type RoutingConfig struct {
-	DefaultStrategy RoutingStrategy `mapstructure:"default_strategy" yaml:"default_strategy"`
-	TimeoutSeconds  int             `mapstructure:"timeout_seconds" yaml:"timeout_seconds"`
-	CostWeight      float64         `mapstructure:"cost_weight" yaml:"cost_weight"`
-	LatencyWeight   float64         `mapstructure:"latency_weight" yaml:"latency_weight"`
+	DefaultStrategy  RoutingStrategy `mapstructure:"default_strategy" yaml:"default_strategy"`
+	TimeoutSeconds   int             `mapstructure:"timeout_seconds" yaml:"timeout_seconds"`
+	CostWeight       float64         `mapstructure:"cost_weight" yaml:"cost_weight"`
+	LatencyWeight    float64         `mapstructure:"latency_weight" yaml:"latency_weight"`
+	DefaultFallbacks []string        `mapstructure:"default_fallbacks,omitempty" yaml:"default_fallbacks,omitempty"`
 }
 
 type CircuitBreakerConfig struct {
@@ -117,8 +118,9 @@ type TargetModel struct {
 }
 
 type ModelRule struct {
-	Strategy RoutingStrategy `mapstructure:"strategy" yaml:"strategy"`
-	Targets  []TargetModel   `mapstructure:"targets" yaml:"targets"`
+	Strategy  RoutingStrategy `mapstructure:"strategy" yaml:"strategy"`
+	Targets   []TargetModel   `mapstructure:"targets" yaml:"targets"`
+	Fallbacks []string        `mapstructure:"fallbacks,omitempty" yaml:"fallbacks,omitempty"`
 }
 
 // DefaultConfig returns a sane default configuration.
