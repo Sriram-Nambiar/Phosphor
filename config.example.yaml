@@ -1,0 +1,120 @@
+server:
+  host: "127.0.0.1"
+  port: 8080
+  read_timeout: 60s
+  write_timeout: 120s
+
+database:
+  path: "~/.phosphor/phosphor.db"
+
+routing:
+  default_strategy: "priority" # "priority", "least-cost", "lowest-latency"
+  timeout_seconds: 30
+
+circuit_breaker:
+  failure_threshold: 3
+  cooldown_seconds: 30
+
+providers:
+  - name: "openai"
+    type: "openai"
+    base_url: "https://api.openai.com/v1"
+    api_key: "${OPENAI_API_KEY}"
+    enabled: true
+    timeout_seconds: 30
+    models:
+      - "gpt-4o"
+      - "gpt-4o-mini"
+    cost:
+      prompt_cost_per_1m: 2.50
+      completion_cost_per_1m: 10.00
+
+  - name: "groq"
+    type: "groq"
+    base_url: "https://api.groq.com/openai/v1"
+    api_key: "${GROQ_API_KEY}"
+    enabled: true
+    timeout_seconds: 15
+    models:
+      - "llama-3.3-70b-versatile"
+      - "llama-3.1-8b-instant"
+    cost:
+      prompt_cost_per_1m: 0.59
+      completion_cost_per_1m: 0.79
+
+  - name: "anthropic"
+    type: "anthropic"
+    base_url: "https://api.anthropic.com/v1"
+    api_key: "${ANTHROPIC_API_KEY}"
+    enabled: true
+    timeout_seconds: 30
+    models:
+      - "claude-3-5-sonnet-20241022"
+      - "claude-3-5-haiku-20241022"
+    cost:
+      prompt_cost_per_1m: 3.00
+      completion_cost_per_1m: 15.00
+
+  - name: "gemini"
+    type: "gemini"
+    base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+    api_key: "${GEMINI_API_KEY}"
+    enabled: true
+    timeout_seconds: 30
+    models:
+      - "gemini-2.0-flash"
+    cost:
+      prompt_cost_per_1m: 0.10
+      completion_cost_per_1m: 0.40
+
+  - name: "ollama"
+    type: "ollama"
+    base_url: "http://localhost:11434"
+    api_key: ""
+    enabled: true
+    timeout_seconds: 60
+    models:
+      - "llama3.2"
+      - "mistral"
+    cost:
+      prompt_cost_per_1m: 0.0
+      completion_cost_per_1m: 0.0
+
+models:
+  default:
+    strategy: "priority"
+    targets:
+      - provider: "openai"
+        model: "gpt-4o-mini"
+      - provider: "groq"
+        model: "llama-3.3-70b-versatile"
+      - provider: "ollama"
+        model: "llama3.2"
+
+  gpt-4o:
+    strategy: "priority"
+    targets:
+      - provider: "openai"
+        model: "gpt-4o"
+      - provider: "groq"
+        model: "llama-3.3-70b-versatile"
+
+  fast:
+    strategy: "lowest-latency"
+    targets:
+      - provider: "groq"
+        model: "llama-3.1-8b-instant"
+      - provider: "openai"
+        model: "gpt-4o-mini"
+
+  cheapest:
+    strategy: "least-cost"
+    targets:
+      - provider: "ollama"
+        model: "llama3.2"
+      - provider: "gemini"
+        model: "gemini-2.0-flash"
+      - provider: "groq"
+        model: "llama-3.1-8b-instant"
+      - provider: "openai"
+        model: "gpt-4o-mini"

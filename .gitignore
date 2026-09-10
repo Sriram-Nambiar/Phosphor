@@ -1,0 +1,23 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+/phosphor
+
+# Database & local state
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.phosphor/
+
+# Configuration with real secrets (keep config.example.yaml committed)
+config.yaml
+
+# OS files
+.DS_Store
+Thumbs.db
