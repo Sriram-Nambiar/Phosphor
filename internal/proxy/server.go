@@ -568,50 +568,67 @@ func (s *Server) handleStreamingCompletions(w http.ResponseWriter, ctx context.C
 	var finalUsage *provider.Usage
 
 	var streamErr error
-	for chunk := range streamResult.StreamChan {
-		if chunk.Err != nil {
-			streamErr = chunk.Err
-			log.Printf("[Phosphor] Streaming chunk error: %s\n", security.RedactText(chunk.Err.Error()))
+	var clientAborted bool
 
-			errPayload, _ := json.Marshal(map[string]any{
-				"error": map[string]any{
-					"message": security.RedactText(chunk.Err.Error()),
-					"type":    "upstream_error",
-					"code":    "stream_interrupted",
-				},
-			})
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", errPayload)
-			flusher.Flush()
-			break
-		}
-
-		if firstChunk {
-			firstChunk = false
-			ttftMs = float64(time.Since(start).Microseconds()) / 1000.0
-			if ttftMs <= 0 {
-				ttftMs = 0.001
+streamLoop:
+	for {
+		select {
+		case <-ctx.Done():
+			clientAborted = true
+			log.Printf("[Phosphor] Client aborted stream connection for request %s\n", requestID)
+			break streamLoop
+		case chunk, ok := <-streamResult.StreamChan:
+			if !ok {
+				break streamLoop
 			}
-			s.router.GetLatencyTracker().Record(streamResult.Candidate.ProviderName, streamResult.Candidate.Model, ttftMs, 0)
-			if s.database != nil {
-				_ = s.database.UpdateLatencyEMA(ctx, streamResult.Candidate.ProviderName, streamResult.Candidate.Model, ttftMs, 0, 0.2, false)
+
+			if chunk.Err != nil {
+				streamErr = chunk.Err
+				log.Printf("[Phosphor] Streaming chunk error: %s\n", security.RedactText(chunk.Err.Error()))
+
+				errPayload, _ := json.Marshal(map[string]any{
+					"error": map[string]any{
+						"message": security.RedactText(chunk.Err.Error()),
+						"type":    "upstream_error",
+						"code":    "stream_interrupted",
+					},
+				})
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", errPayload)
+				flusher.Flush()
+				break streamLoop
 			}
-		}
 
-		if len(chunk.Choices) > 0 {
-			completionChars += len(chunk.Choices[0].Delta.Content)
-		}
-		if chunk.Usage != nil {
-			finalUsage = chunk.Usage
-		}
+			if firstChunk {
+				firstChunk = false
+				ttftMs = float64(time.Since(start).Microseconds()) / 1000.0
+				if ttftMs <= 0 {
+					ttftMs = 0.001
+				}
+				s.router.GetLatencyTracker().Record(streamResult.Candidate.ProviderName, streamResult.Candidate.Model, ttftMs, 0)
+				if s.database != nil {
+					_ = s.database.UpdateLatencyEMA(ctx, streamResult.Candidate.ProviderName, streamResult.Candidate.Model, ttftMs, 0, 0.2, false)
+				}
+			}
 
-		sseData, err := provider.FormatSSEChunk(chunk)
-		if err == nil {
-			_, _ = w.Write(sseData)
-			flusher.Flush()
+			if len(chunk.Choices) > 0 {
+				completionChars += len(chunk.Choices[0].Delta.Content)
+			}
+			if chunk.Usage != nil {
+				finalUsage = chunk.Usage
+			}
+
+			sseData, err := provider.FormatSSEChunk(chunk)
+			if err == nil {
+				if _, err := w.Write(sseData); err != nil {
+					clientAborted = true
+					break streamLoop
+				}
+				flusher.Flush()
+			}
 		}
 	}
 
-	if streamErr == nil {
+	if streamErr == nil && !clientAborted {
 		// Terminate SSE stream normally
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		flusher.Flush()
@@ -634,7 +651,10 @@ func (s *Server) handleStreamingCompletions(w http.ResponseWriter, ctx context.C
 
 	statusCode := http.StatusOK
 	var errorMsg string
-	if streamErr != nil {
+	if clientAborted {
+		statusCode = 499 // Client Closed Request
+		errorMsg = "client aborted stream connection"
+	} else if streamErr != nil {
 		statusCode = http.StatusBadGateway
 		errorMsg = security.RedactText(streamErr.Error())
 	}

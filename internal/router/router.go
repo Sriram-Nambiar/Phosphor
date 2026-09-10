@@ -599,10 +599,22 @@ func (r *Router) ExecuteStream(ctx context.Context, req *provider.ChatRequest, r
 			wrappedChan := make(chan provider.StreamChunk)
 			go func() {
 				defer release()
-				for chunk := range streamChan {
-					wrappedChan <- chunk
+				defer close(wrappedChan)
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case chunk, ok := <-streamChan:
+						if !ok {
+							return
+						}
+						select {
+						case wrappedChan <- chunk:
+						case <-ctx.Done():
+							return
+						}
+					}
 				}
-				close(wrappedChan)
 			}()
 
 			return &StreamResult{

@@ -782,3 +782,70 @@ func TestServer_ChatCompletions_Streaming_MidStreamError(t *testing.T) {
 		t.Errorf("expected ErrorMsg to contain upstream failure, got: %s", recent[0].ErrorMsg)
 	}
 }
+
+func TestServer_ChatCompletions_Streaming_ClientDisconnect(t *testing.T) {
+	upstreamHit := make(chan struct{})
+	upstreamDone := make(chan struct{})
+
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+
+		// Send one chunk
+		fmt.Fprintf(w, "data: {\"id\":\"chatcmpl-cancel1\",\"choices\":[{\"delta\":{\"content\":\"First chunk\"}}]}\n\n")
+		flusher.Flush()
+		close(upstreamHit)
+
+		// Wait for context cancellation or timeout
+		select {
+		case <-r.Context().Done():
+			close(upstreamDone)
+			return
+		case <-time.After(3 * time.Second):
+			close(upstreamDone)
+			return
+		}
+	})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	reqBody := `{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"Cancel stream test"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(reqBody)))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(ctx)
+
+	// Cancel context as soon as upstream sends first chunk
+	go func() {
+		<-upstreamHit
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	// Wait to verify upstream also received the cancellation
+	select {
+	case <-upstreamDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream did not receive cancellation in time")
+	}
+
+	// Verify database record has 499 status code
+	recent, err := dbInstance.GetRecentRequests(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("failed to query db: %v", err)
+	}
+	if len(recent) != 1 {
+		t.Fatalf("expected 1 logged request, got %d", len(recent))
+	}
+	if recent[0].StatusCode != 499 {
+		t.Errorf("expected StatusCode 499 for client cancel, got %d", recent[0].StatusCode)
+	}
+	if !strings.Contains(recent[0].ErrorMsg, "client aborted") {
+		t.Errorf("expected ErrorMsg to contain 'client aborted', got: %s", recent[0].ErrorMsg)
+	}
+}
+
