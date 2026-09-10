@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/Sriram-Nambiar/Phosphor/internal/config"
 )
@@ -16,14 +17,68 @@ type ChatMessage struct {
 	ToolCallID string      `json:"tool_call_id,omitempty"`
 }
 
+type ResponseFormat struct {
+	Type string `json:"type,omitempty"`
+}
+
 type ChatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []ChatMessage `json:"messages"`
-	Stream      bool          `json:"stream,omitempty"`
-	Temperature *float64      `json:"temperature,omitempty"`
-	TopP        *float64      `json:"top_p,omitempty"`
-	MaxTokens   *int          `json:"max_tokens,omitempty"`
-	Stop        interface{}   `json:"stop,omitempty"`
+	Model          string          `json:"model"`
+	Messages       []ChatMessage   `json:"messages"`
+	Stream         bool            `json:"stream,omitempty"`
+	Temperature    *float64        `json:"temperature,omitempty"`
+	TopP           *float64        `json:"top_p,omitempty"`
+	MaxTokens      *int            `json:"max_tokens,omitempty"`
+	Stop           interface{}     `json:"stop,omitempty"`
+	Tools          interface{}     `json:"tools,omitempty"`
+	ToolChoice     interface{}     `json:"tool_choice,omitempty"`
+	Functions      interface{}     `json:"functions,omitempty"`
+	FunctionCall   interface{}     `json:"function_call,omitempty"`
+	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
+}
+
+// RequiresTools returns true if the request specifies tools, functions, or tool choice.
+func (r *ChatRequest) RequiresTools() bool {
+	if r == nil {
+		return false
+	}
+	if r.Tools != nil {
+		if s, ok := r.Tools.([]interface{}); ok && len(s) == 0 {
+			// empty tools array
+		} else {
+			return true
+		}
+	}
+	if r.Functions != nil {
+		if s, ok := r.Functions.([]interface{}); ok && len(s) == 0 {
+			// empty functions array
+		} else {
+			return true
+		}
+	}
+	return r.ToolChoice != nil || r.FunctionCall != nil
+}
+
+// RequiresJSONMode returns true if the request specifies json_object response formatting.
+func (r *ChatRequest) RequiresJSONMode() bool {
+	if r == nil || r.ResponseFormat == nil {
+		return false
+	}
+	return r.ResponseFormat.Type == "json_object"
+}
+
+// RequiresVision returns true if the request contains image content parts or URLs.
+func (r *ChatRequest) RequiresVision() bool {
+	if r == nil {
+		return false
+	}
+	for _, m := range r.Messages {
+		if strings.Contains(m.Content, "data:image/") ||
+			strings.Contains(m.Content, "\"type\":\"image_url\"") ||
+			strings.Contains(m.Content, "\"image_url\"") {
+			return true
+		}
+	}
+	return false
 }
 
 type ChatChoice struct {

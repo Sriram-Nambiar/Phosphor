@@ -104,14 +104,16 @@ type ProviderConfig struct {
 	TimeoutSeconds int          `mapstructure:"timeout_seconds" yaml:"timeout_seconds"`
 	MaxConcurrency int          `mapstructure:"max_concurrency" yaml:"max_concurrency"`
 	Models         []string     `mapstructure:"models" yaml:"models"`
+	Capabilities   []string     `mapstructure:"capabilities,omitempty" yaml:"capabilities,omitempty"`
 	Cost           CostConfig   `mapstructure:"cost" yaml:"cost"`
 }
 
 type TargetModel struct {
-	Provider string      `mapstructure:"provider" yaml:"provider"`
-	Model    string      `mapstructure:"model" yaml:"model"`
-	Cost     *CostConfig `mapstructure:"cost,omitempty" yaml:"cost,omitempty"`
-	Weight   int         `mapstructure:"weight,omitempty" yaml:"weight,omitempty"`
+	Provider     string      `mapstructure:"provider" yaml:"provider"`
+	Model        string      `mapstructure:"model" yaml:"model"`
+	Cost         *CostConfig `mapstructure:"cost,omitempty" yaml:"cost,omitempty"`
+	Weight       int         `mapstructure:"weight,omitempty" yaml:"weight,omitempty"`
+	Capabilities []string    `mapstructure:"capabilities,omitempty" yaml:"capabilities,omitempty"`
 }
 
 type ModelRule struct {

@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +21,28 @@ type CandidateTarget struct {
 	Breaker      *CircuitBreaker
 	BreakerState CircuitState
 	Weight       int
+	Capabilities []string
+}
+
+// SupportsCapability checks if the candidate target supports the required capability.
+// If capabilities are empty (unannotated), it returns true for backward compatibility.
+func (c CandidateTarget) SupportsCapability(capName string) bool {
+	if len(c.Capabilities) == 0 {
+		return true
+	}
+	target := strings.ToLower(strings.TrimSpace(capName))
+	for _, declared := range c.Capabilities {
+		d := strings.ToLower(strings.TrimSpace(declared))
+		if d == target {
+			return true
+		}
+		if (target == "tools" && (d == "function_calling" || d == "functions")) ||
+			(target == "vision" && (d == "multimodal" || d == "image")) ||
+			(target == "json_mode" && (d == "json" || d == "json_object")) {
+			return true
+		}
+	}
+	return false
 }
 
 type Router struct {
@@ -255,6 +278,11 @@ func (r *Router) ResolveCandidates(req *provider.ChatRequest) ([]CandidateTarget
 			weight = 1
 		}
 
+		caps := tm.Capabilities
+		if len(caps) == 0 {
+			caps = pCfg.Capabilities
+		}
+
 		var bState CircuitState = StateClosed
 		if cb != nil {
 			bState = cb.GetState()
@@ -268,11 +296,37 @@ func (r *Router) ResolveCandidates(req *provider.ChatRequest) ([]CandidateTarget
 			Breaker:      cb,
 			BreakerState: bState,
 			Weight:       weight,
+			Capabilities: caps,
 		})
 	}
 
 	if len(candidates) == 0 {
 		return nil, strategy, fmt.Errorf("no active providers configured for model: %s", model)
+	}
+
+	// Filter candidates by required capabilities (vision, tools, json_mode)
+	reqVision := req.RequiresVision()
+	reqTools := req.RequiresTools()
+	reqJSON := req.RequiresJSONMode()
+
+	if reqVision || reqTools || reqJSON {
+		var capableCandidates []CandidateTarget
+		for _, c := range candidates {
+			if reqVision && !c.SupportsCapability("vision") {
+				continue
+			}
+			if reqTools && !c.SupportsCapability("tools") {
+				continue
+			}
+			if reqJSON && !c.SupportsCapability("json_mode") {
+				continue
+			}
+			capableCandidates = append(capableCandidates, c)
+		}
+		if len(capableCandidates) == 0 {
+			return nil, strategy, fmt.Errorf("no targets available for model '%s' satisfying required capabilities (vision=%v, tools=%v, json_mode=%v)", model, reqVision, reqTools, reqJSON)
+		}
+		candidates = capableCandidates
 	}
 
 	// Partition candidates by circuit breaker state:
