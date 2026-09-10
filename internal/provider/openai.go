@@ -15,8 +15,9 @@ import (
 )
 
 type OpenAIProvider struct {
-	cfg        config.ProviderConfig
-	httpClient *http.Client
+	cfg          config.ProviderConfig
+	httpClient   *http.Client
+	streamClient *http.Client
 }
 
 func NewOpenAIProvider(cfg config.ProviderConfig) *OpenAIProvider {
@@ -26,10 +27,9 @@ func NewOpenAIProvider(cfg config.ProviderConfig) *OpenAIProvider {
 	}
 
 	return &OpenAIProvider{
-		cfg: cfg,
-		httpClient: &http.Client{
-			Timeout: timeout,
-		},
+		cfg:          cfg,
+		httpClient:   NewHTTPClient(timeout),
+		streamClient: NewStreamingHTTPClient(),
 	}
 }
 
@@ -137,9 +137,7 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan S
 		httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
 	}
 
-	// For streaming, use client without total timeout so connection stays open
-	client := &http.Client{}
-	resp, err := client.Do(httpReq)
+	resp, err := p.streamClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("streaming request failed for %s: %w", p.cfg.Name, err)
 	}

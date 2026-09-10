@@ -15,8 +15,9 @@ import (
 )
 
 type AnthropicProvider struct {
-	cfg        config.ProviderConfig
-	httpClient *http.Client
+	cfg          config.ProviderConfig
+	httpClient   *http.Client
+	streamClient *http.Client
 }
 
 func NewAnthropicProvider(cfg config.ProviderConfig) *AnthropicProvider {
@@ -26,10 +27,9 @@ func NewAnthropicProvider(cfg config.ProviderConfig) *AnthropicProvider {
 	}
 
 	return &AnthropicProvider{
-		cfg: cfg,
-		httpClient: &http.Client{
-			Timeout: timeout,
-		},
+		cfg:          cfg,
+		httpClient:   NewHTTPClient(timeout),
+		streamClient: NewStreamingHTTPClient(),
 	}
 }
 
@@ -235,8 +235,7 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req *ChatRequest) (<-cha
 	httpReq.Header.Set("x-api-key", p.cfg.APIKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 
-	client := &http.Client{}
-	resp, err := client.Do(httpReq)
+	resp, err := p.streamClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("streaming request failed for %s: %w", p.cfg.Name, err)
 	}

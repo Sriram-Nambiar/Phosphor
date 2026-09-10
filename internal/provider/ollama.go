@@ -16,8 +16,9 @@ import (
 )
 
 type OllamaProvider struct {
-	cfg        config.ProviderConfig
-	httpClient *http.Client
+	cfg          config.ProviderConfig
+	httpClient   *http.Client
+	streamClient *http.Client
 }
 
 func NewOllamaProvider(cfg config.ProviderConfig) *OllamaProvider {
@@ -27,10 +28,9 @@ func NewOllamaProvider(cfg config.ProviderConfig) *OllamaProvider {
 	}
 
 	return &OllamaProvider{
-		cfg: cfg,
-		httpClient: &http.Client{
-			Timeout: timeout,
-		},
+		cfg:          cfg,
+		httpClient:   NewHTTPClient(timeout),
+		streamClient: NewStreamingHTTPClient(),
 	}
 }
 
@@ -214,8 +214,7 @@ func (p *OllamaProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan S
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
-	resp, err := client.Do(httpReq)
+	resp, err := p.streamClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("ollama stream request failed: %w", err)
 	}
