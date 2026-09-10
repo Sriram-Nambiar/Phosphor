@@ -18,6 +18,7 @@ type CandidateTarget struct {
 	Cost         config.CostConfig
 	Client       provider.Provider
 	Breaker      *CircuitBreaker
+	Weight       int
 }
 
 type Router struct {
@@ -239,12 +240,18 @@ func (r *Router) ResolveCandidates(req *provider.ChatRequest) ([]CandidateTarget
 			costCfg = *tm.Cost
 		}
 
+		weight := tm.Weight
+		if weight <= 0 {
+			weight = 1
+		}
+
 		candidates = append(candidates, CandidateTarget{
 			ProviderName: tm.Provider,
 			Model:        tm.Model,
 			Cost:         costCfg,
 			Client:       p,
 			Breaker:      cb,
+			Weight:       weight,
 		})
 	}
 

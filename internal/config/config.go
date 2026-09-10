@@ -14,9 +14,11 @@ import (
 type RoutingStrategy string
 
 const (
-	StrategyPriority      RoutingStrategy = "priority"
-	StrategyLeastCost     RoutingStrategy = "least-cost"
-	StrategyLowestLatency RoutingStrategy = "lowest-latency"
+	StrategyPriority           RoutingStrategy = "priority"
+	StrategyLeastCost          RoutingStrategy = "least-cost"
+	StrategyLowestLatency      RoutingStrategy = "lowest-latency"
+	StrategyRoundRobin         RoutingStrategy = "round-robin"
+	StrategyWeightedRoundRobin RoutingStrategy = "weighted-round-robin"
 )
 
 type ProviderType string
@@ -106,6 +108,7 @@ type TargetModel struct {
 	Provider string      `mapstructure:"provider" yaml:"provider"`
 	Model    string      `mapstructure:"model" yaml:"model"`
 	Cost     *CostConfig `mapstructure:"cost,omitempty" yaml:"cost,omitempty"`
+	Weight   int         `mapstructure:"weight,omitempty" yaml:"weight,omitempty"`
 }
 
 type ModelRule struct {
@@ -365,7 +368,7 @@ func (c *Config) Validate() error {
 	}
 
 	switch c.Routing.DefaultStrategy {
-	case StrategyPriority, StrategyLeastCost, StrategyLowestLatency, "":
+	case StrategyPriority, StrategyLeastCost, StrategyLowestLatency, StrategyRoundRobin, StrategyWeightedRoundRobin, "round_robin", "weighted_round_robin", "":
 		// Valid strategy or default
 	default:
 		errs = append(errs, fmt.Sprintf("invalid routing.default_strategy '%s'", c.Routing.DefaultStrategy))
@@ -411,12 +414,22 @@ func (c *Config) Validate() error {
 	}
 
 	for mName, rule := range c.Models {
+		switch rule.Strategy {
+		case StrategyPriority, StrategyLeastCost, StrategyLowestLatency, StrategyRoundRobin, StrategyWeightedRoundRobin, "round_robin", "weighted_round_robin", "":
+			// Valid strategy
+		default:
+			errs = append(errs, fmt.Sprintf("models['%s'].strategy '%s' is invalid", mName, rule.Strategy))
+		}
+
 		if len(rule.Targets) == 0 {
 			errs = append(errs, fmt.Sprintf("models['%s'] must define at least one target", mName))
 		}
-		for _, tgt := range rule.Targets {
+		for tIdx, tgt := range rule.Targets {
 			if !providerNames[tgt.Provider] {
-				errs = append(errs, fmt.Sprintf("models['%s'] references non-existent provider '%s'", mName, tgt.Provider))
+				errs = append(errs, fmt.Sprintf("models['%s'].targets[%d] references non-existent provider '%s'", mName, tIdx, tgt.Provider))
+			}
+			if tgt.Weight < 0 {
+				errs = append(errs, fmt.Sprintf("models['%s'].targets[%d].weight cannot be negative", mName, tIdx))
 			}
 		}
 	}
