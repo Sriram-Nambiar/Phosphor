@@ -26,6 +26,7 @@ type Router struct {
 	database       *db.DB
 	providers      map[string]provider.Provider
 	breakers       map[string]*CircuitBreaker
+	semaphores     map[string]chan struct{}
 	latencyTracker *LatencyTracker
 	mu             sync.RWMutex
 }
@@ -36,6 +37,7 @@ func NewRouter(cfg *config.Config, database *db.DB) (*Router, error) {
 		database:       database,
 		providers:      make(map[string]provider.Provider),
 		breakers:       make(map[string]*CircuitBreaker),
+		semaphores:     make(map[string]chan struct{}),
 		latencyTracker: NewLatencyTracker(0.2),
 	}
 
@@ -49,7 +51,7 @@ func NewRouter(cfg *config.Config, database *db.DB) (*Router, error) {
 		cooldown = 30 * time.Second
 	}
 
-	// Instantiate providers and circuit breakers
+	// Instantiate providers, circuit breakers, and concurrency semaphores
 	for _, pCfg := range cfg.Providers {
 		if !pCfg.Enabled {
 			continue
@@ -60,6 +62,9 @@ func NewRouter(cfg *config.Config, database *db.DB) (*Router, error) {
 		}
 		r.providers[pCfg.Name] = p
 		r.breakers[pCfg.Name] = NewCircuitBreaker(threshold, cooldown)
+		if pCfg.MaxConcurrency > 0 {
+			r.semaphores[pCfg.Name] = make(chan struct{}, pCfg.MaxConcurrency)
+		}
 	}
 
 	// Preload latency tracker from database if available
@@ -103,11 +108,48 @@ func (r *Router) ProviderStatuses() map[string]string {
 		cb, ok := r.breakers[name]
 		if ok && cb != nil && !cb.Allow() {
 			statuses[name] = "circuit_open"
+		} else if sem, ok := r.semaphores[name]; ok && sem != nil && len(sem) >= cap(sem) {
+			statuses[name] = "busy"
 		} else {
 			statuses[name] = "available"
 		}
 	}
 	return statuses
+}
+
+// TryAcquireConcurrency attempts to acquire an active execution slot for a provider.
+// Returns a release closure and true if acquired (or if unconstrained); nil and false if busy.
+func (r *Router) TryAcquireConcurrency(provider string) (func(), bool) {
+	r.mu.RLock()
+	sem, exists := r.semaphores[provider]
+	r.mu.RUnlock()
+
+	if !exists || sem == nil {
+		return func() {}, true
+	}
+
+	select {
+	case sem <- struct{}{}:
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				<-sem
+			})
+		}, true
+	default:
+		return nil, false
+	}
+}
+
+// GetConcurrency returns the currently active slots and maximum capacity for a provider.
+func (r *Router) GetConcurrency(provider string) (active int, max int) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	sem, exists := r.semaphores[provider]
+	if !exists || sem == nil {
+		return 0, 0
+	}
+	return len(sem), cap(sem)
 }
 
 func (r *Router) findProviderConfig(name string) (config.ProviderConfig, bool) {
@@ -252,12 +294,34 @@ func (r *Router) Execute(ctx context.Context, req *provider.ChatRequest, request
 	var lastErr error
 
 	for i, cand := range candidates {
+		release, acquired := r.TryAcquireConcurrency(cand.ProviderName)
+		if !acquired {
+			if i+1 < len(candidates) {
+				nextCandidate := candidates[i+1]
+				trace := db.FailoverTrace{
+					RequestID:    requestID,
+					Timestamp:    time.Now().UTC(),
+					FromProvider: cand.ProviderName,
+					ToProvider:   nextCandidate.ProviderName,
+					Reason:       fmt.Sprintf("concurrency limit reached for provider %s", cand.ProviderName),
+					LatencyMs:    0,
+				}
+				traces = append(traces, trace)
+				if r.database != nil {
+					_ = r.database.LogFailover(ctx, &trace)
+				}
+			}
+			lastErr = fmt.Errorf("concurrency limit reached for provider %s", cand.ProviderName)
+			continue
+		}
+
 		targetReq := *req
 		targetReq.Model = cand.Model
 
 		attemptStart := time.Now()
 		resp, attemptErr := cand.Client.Send(ctx, &targetReq)
 		attemptLatency := float64(time.Since(attemptStart).Milliseconds())
+		release()
 
 		if attemptErr == nil {
 			// Success!
@@ -326,6 +390,27 @@ func (r *Router) ExecuteStream(ctx context.Context, req *provider.ChatRequest, r
 	var lastErr error
 
 	for i, cand := range candidates {
+		release, acquired := r.TryAcquireConcurrency(cand.ProviderName)
+		if !acquired {
+			if i+1 < len(candidates) {
+				nextCandidate := candidates[i+1]
+				trace := db.FailoverTrace{
+					RequestID:    requestID,
+					Timestamp:    time.Now().UTC(),
+					FromProvider: cand.ProviderName,
+					ToProvider:   nextCandidate.ProviderName,
+					Reason:       fmt.Sprintf("concurrency limit reached for provider %s", cand.ProviderName),
+					LatencyMs:    0,
+				}
+				traces = append(traces, trace)
+				if r.database != nil {
+					_ = r.database.LogFailover(ctx, &trace)
+				}
+			}
+			lastErr = fmt.Errorf("concurrency limit reached for provider %s", cand.ProviderName)
+			continue
+		}
+
 		targetReq := *req
 		targetReq.Model = cand.Model
 
@@ -334,12 +419,23 @@ func (r *Router) ExecuteStream(ctx context.Context, req *provider.ChatRequest, r
 		attemptLatency := float64(time.Since(attemptStart).Milliseconds())
 
 		if attemptErr == nil {
+			wrappedChan := make(chan provider.StreamChunk)
+			go func() {
+				defer release()
+				for chunk := range streamChan {
+					wrappedChan <- chunk
+				}
+				close(wrappedChan)
+			}()
+
 			return &StreamResult{
-				StreamChan:     streamChan,
+				StreamChan:     wrappedChan,
 				Candidate:      cand,
 				FailoverTraces: traces,
 			}, nil
 		}
+
+		release()
 
 		// Initial connection failed
 		lastErr = attemptErr

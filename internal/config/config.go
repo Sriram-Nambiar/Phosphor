@@ -97,6 +97,7 @@ type ProviderConfig struct {
 	APIKey         string       `mapstructure:"api_key" yaml:"api_key"`
 	Enabled        bool         `mapstructure:"enabled" yaml:"enabled"`
 	TimeoutSeconds int          `mapstructure:"timeout_seconds" yaml:"timeout_seconds"`
+	MaxConcurrency int          `mapstructure:"max_concurrency" yaml:"max_concurrency"`
 	Models         []string     `mapstructure:"models" yaml:"models"`
 	Cost           CostConfig   `mapstructure:"cost" yaml:"cost"`
 }
@@ -402,6 +403,9 @@ func (c *Config) Validate() error {
 			}
 			if p.Cost.PromptCostPer1M < 0 || p.Cost.CompletionCostPer1M < 0 {
 				errs = append(errs, fmt.Sprintf("providers[%s].cost cannot have negative pricing", p.Name))
+			}
+			if p.MaxConcurrency < 0 {
+				errs = append(errs, fmt.Sprintf("providers[%s].max_concurrency cannot be negative", p.Name))
 			}
 		}
 	}

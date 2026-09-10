@@ -273,3 +273,108 @@ func TestRouter_FailoverCascade(t *testing.T) {
 		t.Errorf("expected 1 db failover trace, got %d", len(dbTraces))
 	}
 }
+
+func TestRouter_ConcurrencyLimitAndFailover(t *testing.T) {
+	primaryMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"id":"p1","choices":[{"message":{"role":"assistant","content":"from-primary"}}]}`)
+	}))
+	defer primaryMock.Close()
+
+	secondaryMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"id":"p2","choices":[{"message":{"role":"assistant","content":"from-secondary"}}]}`)
+	}))
+	defer secondaryMock.Close()
+
+	database, err := db.New(":memory:")
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer database.Close()
+
+	cfg := &config.Config{
+		Routing: config.RoutingConfig{
+			DefaultStrategy: config.StrategyPriority,
+		},
+		Providers: []config.ProviderConfig{
+			{
+				Name:           "primary-p",
+				Type:           config.ProviderTypeOpenAI,
+				BaseURL:        primaryMock.URL,
+				Enabled:        true,
+				MaxConcurrency: 1, // Only 1 concurrent request allowed!
+			},
+			{
+				Name:    "secondary-p",
+				Type:    config.ProviderTypeOpenAI,
+				BaseURL: secondaryMock.URL,
+				Enabled: true,
+			},
+		},
+		Models: map[string]config.ModelRule{
+			"test-model": {
+				Strategy: config.StrategyPriority,
+				Targets: []config.TargetModel{
+					{Provider: "primary-p", Model: "test-model"},
+					{Provider: "secondary-p", Model: "test-model"},
+				},
+			},
+		},
+	}
+
+	r, err := NewRouter(cfg, database)
+	if err != nil {
+		t.Fatalf("failed to create router: %v", err)
+	}
+
+	ctx := context.Background()
+	req := &provider.ChatRequest{
+		Model: "test-model",
+		Messages: []provider.ChatMessage{
+			{Role: "user", Content: "Hello"},
+		},
+	}
+
+	// 1. Manually hold the concurrency slot of primary-p
+	release, acquired := r.TryAcquireConcurrency("primary-p")
+	if !acquired {
+		t.Fatal("expected to acquire initial concurrency slot on primary-p")
+	}
+
+	active, max := r.GetConcurrency("primary-p")
+	if active != 1 || max != 1 {
+		t.Errorf("expected active=1, max=1, got %d/%d", active, max)
+	}
+
+	// 2. Execute request while primary is saturated -> should failover to secondary-p!
+	res1, err := r.Execute(ctx, req, "req-saturated")
+	if err != nil {
+		t.Fatalf("expected failover to succeed, got err: %v", err)
+	}
+	if res1.Candidate.ProviderName != "secondary-p" {
+		t.Errorf("expected failover to secondary-p, got %s", res1.Candidate.ProviderName)
+	}
+	if len(res1.FailoverTraces) != 1 {
+		t.Fatalf("expected 1 failover trace, got %d", len(res1.FailoverTraces))
+	}
+	if res1.FailoverTraces[0].FromProvider != "primary-p" || res1.FailoverTraces[0].ToProvider != "secondary-p" {
+		t.Errorf("unexpected failover trace: %+v", res1.FailoverTraces[0])
+	}
+
+	// 3. Release primary slot and execute again -> should route to primary-p!
+	release()
+	activeAfter, _ := r.GetConcurrency("primary-p")
+	if activeAfter != 0 {
+		t.Errorf("expected active=0 after release, got %d", activeAfter)
+	}
+
+	res2, err := r.Execute(ctx, req, "req-released")
+	if err != nil {
+		t.Fatalf("expected request to succeed, got: %v", err)
+	}
+	if res2.Candidate.ProviderName != "primary-p" {
+		t.Errorf("expected request to route to primary-p, got %s", res2.Candidate.ProviderName)
+	}
+}
+
