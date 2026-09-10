@@ -2,6 +2,8 @@ package db
 
 import (
 	"context"
+	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -297,5 +299,75 @@ func TestDB_LogBatch(t *testing.T) {
 	if stats.TotalFailovers != 1 {
 		t.Errorf("expected 1 failover, got %d", stats.TotalFailovers)
 	}
+}
+
+func TestDB_ZeroLossQueueDraining_OnClose(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "draining_test.db")
+
+	d, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create db: %v", err)
+	}
+
+	const totalLogs = 150
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for j := 0; j < totalLogs/5; j++ {
+				_ = d.EnqueueRequestLog(&RequestLog{
+					ModelRequested: "gpt-4o",
+					Provider:       "openai",
+					ModelRouted:    "gpt-4o",
+					StatusCode:     200,
+				})
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Close database immediately without calling Flush manually
+	if err := d.Close(); err != nil {
+		t.Fatalf("failed to close db: %v", err)
+	}
+
+	// Reopen database and verify all 150 logs were drained and persisted
+	reopened, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("failed to reopen db: %v", err)
+	}
+	defer reopened.Close()
+
+	stats, err := reopened.GetAggregateStats(context.Background())
+	if err != nil {
+		t.Fatalf("failed to get stats: %v", err)
+	}
+	if stats.TotalRequests != totalLogs {
+		t.Errorf("expected all %d requests drained on Close, got %d", totalLogs, stats.TotalRequests)
+	}
+}
+
+func TestDB_BackpressureDropMetrics(t *testing.T) {
+	d, err := New(":memory:")
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer d.Close()
+
+	if d.QueueDepth() < 0 {
+		t.Errorf("expected non-negative queue depth")
+	}
+
+	// Artificially close queue to force backpressure drops
+	d.closed.Store(true)
+
+	ok := d.EnqueueRequestLog(&RequestLog{ModelRequested: "gpt-4o"})
+	if ok {
+		t.Error("expected enqueue to return false when db is closed")
+	}
+	// Verify DroppedLogsCount can be read
+	_ = d.DroppedLogsCount()
 }
 

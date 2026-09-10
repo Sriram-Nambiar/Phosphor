@@ -250,7 +250,11 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
-	return s.server.Shutdown(ctx)
+	err := s.server.Shutdown(ctx)
+	if s.database != nil {
+		_ = s.database.Flush(ctx)
+	}
+	return err
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
