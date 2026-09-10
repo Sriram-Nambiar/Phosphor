@@ -114,3 +114,62 @@ func TestConfig_Validation(t *testing.T) {
 		t.Error("expected error for non-existent target provider, got nil")
 	}
 }
+
+func TestConfig_DeepEnvExpansion(t *testing.T) {
+	t.Setenv("TEST_HOST", "0.0.0.0")
+	t.Setenv("TEST_DB_NAME", "custom_telemetry.db")
+	t.Setenv("UPSTREAM_PORT", "11434")
+	t.Setenv("UPSTREAM_HOST", "127.0.0.1")
+
+	cfg := &Config{
+		Server: ServerConfig{
+			Host: "${TEST_HOST}",
+			Port: 8080,
+		},
+		Database: DatabaseConfig{
+			Path: "/tmp/${TEST_DB_NAME}",
+		},
+		Routing: RoutingConfig{
+			DefaultStrategy: StrategyPriority,
+		},
+		CircuitBreaker: CircuitBreakerConfig{
+			FailureThreshold: 3,
+			CooldownSeconds:  30,
+		},
+		Providers: []ProviderConfig{
+			{
+				Name:    "ollama-local",
+				Type:    ProviderTypeOllama,
+				BaseURL: "http://${UPSTREAM_HOST}:${UPSTREAM_PORT}",
+				Enabled: true,
+				Models:  []string{"llama-${UPSTREAM_PORT}"},
+			},
+		},
+		Models: map[string]ModelRule{
+			"default": {
+				Strategy: StrategyPriority,
+				Targets: []TargetModel{
+					{Provider: "ollama-local", Model: "llama-${UPSTREAM_PORT}"},
+				},
+			},
+		},
+	}
+
+	resolveEnvVars(cfg)
+
+	if cfg.Server.Host != "0.0.0.0" {
+		t.Errorf("expected host 0.0.0.0, got %s", cfg.Server.Host)
+	}
+	if cfg.Database.Path != "/tmp/custom_telemetry.db" {
+		t.Errorf("expected db path /tmp/custom_telemetry.db, got %s", cfg.Database.Path)
+	}
+	if cfg.Providers[0].BaseURL != "http://127.0.0.1:11434" {
+		t.Errorf("expected BaseURL http://127.0.0.1:11434, got %s", cfg.Providers[0].BaseURL)
+	}
+	if cfg.Providers[0].Models[0] != "llama-11434" {
+		t.Errorf("expected model llama-11434, got %s", cfg.Providers[0].Models[0])
+	}
+	if cfg.Models["default"].Targets[0].Model != "llama-11434" {
+		t.Errorf("expected target model llama-11434, got %s", cfg.Models["default"].Targets[0].Model)
+	}
+}

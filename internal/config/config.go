@@ -354,26 +354,30 @@ func (c *Config) Validate() error {
 }
 
 func resolveEnvVars(cfg *Config) {
+	cfg.Server.Host = expandEnv(cfg.Server.Host)
+	cfg.Database.Path = expandEnv(cfg.Database.Path)
+
 	for i := range cfg.Providers {
+		cfg.Providers[i].Name = expandEnv(cfg.Providers[i].Name)
 		cfg.Providers[i].APIKey = expandEnv(cfg.Providers[i].APIKey)
 		cfg.Providers[i].BaseURL = expandEnv(cfg.Providers[i].BaseURL)
+		for j := range cfg.Providers[i].Models {
+			cfg.Providers[i].Models[j] = expandEnv(cfg.Providers[i].Models[j])
+		}
+	}
+
+	for mName, rule := range cfg.Models {
+		for i := range rule.Targets {
+			rule.Targets[i].Provider = expandEnv(rule.Targets[i].Provider)
+			rule.Targets[i].Model = expandEnv(rule.Targets[i].Model)
+		}
+		cfg.Models[mName] = rule
 	}
 }
 
 func expandEnv(s string) string {
-	if strings.HasPrefix(s, "${") && strings.HasSuffix(s, "}") {
-		envName := strings.TrimSuffix(strings.TrimPrefix(s, "${"), "}")
-		if val, ok := os.LookupEnv(envName); ok {
-			return val
-		}
+	if s == "" {
 		return ""
 	}
-	if strings.HasPrefix(s, "$") {
-		envName := strings.TrimPrefix(s, "$")
-		if val, ok := os.LookupEnv(envName); ok {
-			return val
-		}
-		return ""
-	}
-	return s
+	return os.ExpandEnv(s)
 }
