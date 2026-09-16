@@ -186,4 +186,31 @@ func TestClientInfo_CanAccessModel(t *testing.T) {
 	}
 }
 
+func TestAuthenticate_WithBudget(t *testing.T) {
+	budgetCfg := &config.BudgetConfig{
+		MaxSpend:    100.0,
+		SoftLimit:   80.0,
+		ResetPeriod: "monthly",
+	}
+
+	keys := []config.APIKeyConfig{
+		{
+			Key:    "sk-budgeted-key",
+			Name:   "enterprise-tenant",
+			Budget: budgetCfg,
+		},
+	}
+
+	info, ok := Authenticate("sk-budgeted-key", keys)
+	if !ok || info == nil {
+		t.Fatal("expected successful authentication")
+	}
+	if info.Budget == nil {
+		t.Fatal("expected non-nil budget on client info")
+	}
+	if info.Budget.MaxSpend != 100.0 || info.Budget.ResetPeriod != "monthly" {
+		t.Errorf("budget config mismatch: %+v", info.Budget)
+	}
+}
+
 

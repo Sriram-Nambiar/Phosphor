@@ -21,6 +21,7 @@ type ClientInfo struct {
 	Name          string
 	AllowedModels []string
 	RateLimit     int
+	Budget        *config.BudgetConfig
 }
 
 // WithClientInfo returns a new context with the client metadata attached.
@@ -104,6 +105,7 @@ func Authenticate(rawKey string, configuredKeys []config.APIKeyConfig) (*ClientI
 					Name:          k.Name,
 					AllowedModels: k.AllowedModels,
 					RateLimit:     k.RateLimit,
+					Budget:        k.Budget,
 				}, true
 			}
 		}
@@ -118,6 +120,7 @@ func Authenticate(rawKey string, configuredKeys []config.APIKeyConfig) (*ClientI
 					Name:          k.Name,
 					AllowedModels: k.AllowedModels,
 					RateLimit:     k.RateLimit,
+					Budget:        k.Budget,
 				}, true
 			}
 		}
@@ -131,6 +134,7 @@ func Authenticate(rawKey string, configuredKeys []config.APIKeyConfig) (*ClientI
 					Name:          k.Name,
 					AllowedModels: k.AllowedModels,
 					RateLimit:     k.RateLimit,
+					Budget:        k.Budget,
 				}, true
 			}
 		}
