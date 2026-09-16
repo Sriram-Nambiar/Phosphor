@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Sriram-Nambiar/Phosphor/internal/auth"
+	"github.com/Sriram-Nambiar/Phosphor/internal/cache"
 	"github.com/Sriram-Nambiar/Phosphor/internal/config"
 	"github.com/Sriram-Nambiar/Phosphor/internal/db"
 	"github.com/Sriram-Nambiar/Phosphor/internal/provider"
@@ -1001,5 +1002,74 @@ func TestServer_MetricsEndpoint(t *testing.T) {
 		t.Errorf("expected 405 Method Not Allowed for POST /metrics, got %d", rrPost.Code)
 	}
 }
+
+func TestServer_ResponseCache(t *testing.T) {
+	callCount := 0
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"id":"cmpl-%d","choices":[{"message":{"role":"assistant","content":"hello %d"}}],"usage":{"prompt_tokens":5,"completion_tokens":5,"total_tokens":10}}`, callCount, callCount)
+	})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	// Enable cache on server
+	srv.cfg.Cache.Enabled = true
+	srv.cfg.Cache.Capacity = 100
+	srv.cfg.Cache.TTL = 10 * time.Minute
+	srv.cache = cache.NewLRUCache(100, 10*time.Minute)
+
+	payload := `{"model":"gpt-4o","messages":[{"role":"user","content":"test cache"}]}`
+
+	// Request 1: Cache MISS
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	rr1 := httptest.NewRecorder()
+	srv.ServeHTTP(rr1, req1)
+
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("req1 failed: %d: %s", rr1.Code, rr1.Body.String())
+	}
+	if rr1.Header().Get("X-Cache") != "MISS" {
+		t.Errorf("expected X-Cache MISS, got %s", rr1.Header().Get("X-Cache"))
+	}
+	if callCount != 1 {
+		t.Errorf("expected upstream callCount=1, got %d", callCount)
+	}
+
+	// Request 2: Cache HIT
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	rr2 := httptest.NewRecorder()
+	srv.ServeHTTP(rr2, req2)
+
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("req2 failed: %d: %s", rr2.Code, rr2.Body.String())
+	}
+	if rr2.Header().Get("X-Cache") != "HIT" {
+		t.Errorf("expected X-Cache HIT, got %s", rr2.Header().Get("X-Cache"))
+	}
+	if callCount != 1 {
+		t.Errorf("expected upstream callCount=1 (not called again), got %d", callCount)
+	}
+	if rr1.Body.String() != rr2.Body.String() {
+		t.Errorf("expected identical body from cache hit")
+	}
+
+	// Request 3: Cache-Control: no-cache bypass
+	req3 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	req3.Header.Set("Cache-Control", "no-cache")
+	rr3 := httptest.NewRecorder()
+	srv.ServeHTTP(rr3, req3)
+
+	if rr3.Code != http.StatusOK {
+		t.Fatalf("req3 failed: %d: %s", rr3.Code, rr3.Body.String())
+	}
+	if rr3.Header().Get("X-Cache") != "MISS" {
+		t.Errorf("expected X-Cache MISS when bypassed, got %s", rr3.Header().Get("X-Cache"))
+	}
+	if callCount != 2 {
+		t.Errorf("expected upstream callCount=2, got %d", callCount)
+	}
+}
+
 
 

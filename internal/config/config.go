@@ -38,6 +38,7 @@ type Config struct {
 	Database       DatabaseConfig       `mapstructure:"database" yaml:"database"`
 	Routing        RoutingConfig        `mapstructure:"routing" yaml:"routing"`
 	CircuitBreaker CircuitBreakerConfig `mapstructure:"circuit_breaker" yaml:"circuit_breaker"`
+	Cache          CacheConfig          `mapstructure:"cache" yaml:"cache"`
 	Providers      []ProviderConfig     `mapstructure:"providers" yaml:"providers"`
 	Models         map[string]ModelRule `mapstructure:"models" yaml:"models"`
 }
@@ -93,6 +94,12 @@ type RoutingConfig struct {
 type CircuitBreakerConfig struct {
 	FailureThreshold int `mapstructure:"failure_threshold" yaml:"failure_threshold"`
 	CooldownSeconds  int `mapstructure:"cooldown_seconds" yaml:"cooldown_seconds"`
+}
+
+type CacheConfig struct {
+	Enabled  bool          `mapstructure:"enabled" yaml:"enabled"`
+	Capacity int           `mapstructure:"capacity" yaml:"capacity"`
+	TTL      time.Duration `mapstructure:"ttl" yaml:"ttl"`
 }
 
 type CostConfig struct {
@@ -172,6 +179,11 @@ func DefaultConfig() *Config {
 		CircuitBreaker: CircuitBreakerConfig{
 			FailureThreshold: 3,
 			CooldownSeconds:  30,
+		},
+		Cache: CacheConfig{
+			Enabled:  false,
+			Capacity: 1000,
+			TTL:      5 * time.Minute,
 		},
 		Providers: []ProviderConfig{
 			{
@@ -337,6 +349,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("routing.max_backoff_ms", 2000)
 	v.SetDefault("circuit_breaker.failure_threshold", 3)
 	v.SetDefault("circuit_breaker.cooldown_seconds", 30)
+	v.SetDefault("cache.enabled", false)
+	v.SetDefault("cache.capacity", 1000)
+	v.SetDefault("cache.ttl", "5m")
 }
 
 // ValidationError records all configuration violations found during validation.
@@ -420,6 +435,15 @@ func (c *Config) Validate() error {
 	}
 	if c.CircuitBreaker.CooldownSeconds < 0 {
 		errs = append(errs, "circuit_breaker.cooldown_seconds cannot be negative")
+	}
+
+	if c.Cache.Enabled {
+		if c.Cache.Capacity < 0 {
+			errs = append(errs, "cache.capacity cannot be negative")
+		}
+		if c.Cache.TTL < 0 {
+			errs = append(errs, "cache.ttl cannot be negative")
+		}
 	}
 
 	if len(c.Providers) == 0 {

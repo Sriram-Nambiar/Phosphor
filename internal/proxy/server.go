@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Sriram-Nambiar/Phosphor/internal/auth"
+	"github.com/Sriram-Nambiar/Phosphor/internal/cache"
 	"github.com/Sriram-Nambiar/Phosphor/internal/config"
 	"github.com/Sriram-Nambiar/Phosphor/internal/db"
 	"github.com/Sriram-Nambiar/Phosphor/internal/provider"
@@ -66,6 +67,7 @@ type Server struct {
 	cfg         *config.Config
 	router      *router.Router
 	database    *db.DB
+	cache       *cache.LRUCache
 	rateLimiter *security.ClientRateLimiter
 	server      *http.Server
 	mux         *http.ServeMux
@@ -73,10 +75,16 @@ type Server struct {
 }
 
 func NewServer(cfg *config.Config, r *router.Router, database *db.DB) *Server {
+	var c *cache.LRUCache
+	if cfg.Cache.Enabled {
+		c = cache.NewLRUCache(cfg.Cache.Capacity, cfg.Cache.TTL)
+	}
+
 	s := &Server{
 		cfg:         cfg,
 		router:      r,
 		database:    database,
+		cache:       c,
 		rateLimiter: security.NewClientRateLimiter(0),
 		mux:         http.NewServeMux(),
 	}
@@ -544,11 +552,26 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if chatReq.Stream {
 		s.handleStreamingCompletions(w, r.Context(), &chatReq, requestID)
 	} else {
-		s.handleNonStreamingCompletions(w, r.Context(), &chatReq, requestID)
+		s.handleNonStreamingCompletions(w, r, &chatReq, requestID)
 	}
 }
 
-func (s *Server) handleNonStreamingCompletions(w http.ResponseWriter, ctx context.Context, req *provider.ChatRequest, requestID string) {
+func (s *Server) handleNonStreamingCompletions(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, requestID string) {
+	ctx := r.Context()
+	var cacheKey string
+
+	// Check response cache if enabled and not bypassed via Cache-Control: no-cache
+	if s.cache != nil && !strings.Contains(strings.ToLower(r.Header.Get("Cache-Control")), "no-cache") {
+		cacheKey = cache.ComputeKey(req, "")
+		if cachedBytes, hit := s.cache.Get(cacheKey); hit {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Cache", "HIT")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(cachedBytes)
+			return
+		}
+	}
+
 	start := time.Now()
 	result, err := s.router.Execute(ctx, req, requestID)
 	latencyMs := float64(time.Since(start).Milliseconds())
@@ -621,9 +644,21 @@ func (s *Server) handleNonStreamingCompletions(w http.ResponseWriter, ctx contex
 		})
 	}
 
+	respBytes, err := json.Marshal(resp)
+	if err == nil && s.cache != nil && cacheKey != "" {
+		s.cache.Set(cacheKey, respBytes, s.cfg.Cache.TTL)
+	}
+
 	w.Header().Set("Content-Type", "application/json")
+	if s.cache != nil {
+		w.Header().Set("X-Cache", "MISS")
+	}
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(resp)
+	if len(respBytes) > 0 {
+		_, _ = w.Write(respBytes)
+	} else {
+		_ = json.NewEncoder(w).Encode(resp)
+	}
 }
 
 func (s *Server) handleStreamingCompletions(w http.ResponseWriter, ctx context.Context, req *provider.ChatRequest, requestID string) {
