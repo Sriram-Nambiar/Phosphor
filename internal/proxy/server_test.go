@@ -1211,6 +1211,87 @@ func TestServer_BudgetEnforcement(t *testing.T) {
 	}
 }
 
+func TestServer_AdminBudgets(t *testing.T) {
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	srv.cfg.Auth = config.AuthConfig{
+		Enabled: true,
+		Keys: []config.APIKeyConfig{
+			{
+				Key:  "fintech-key",
+				Name: "client-fintech",
+				Budget: &config.BudgetConfig{
+					MaxSpend:    50.0,
+					SoftLimit:   40.0,
+					ResetPeriod: "monthly",
+				},
+			},
+			{
+				Key:  "nobudget-key",
+				Name: "client-unlimited",
+			},
+		},
+	}
+
+	_ = dbInstance.LogRequestSync(context.Background(), &db.RequestLog{
+		ModelRequested: "gpt-4o",
+		Provider:       "mock-p",
+		ModelRouted:    "gpt-4o",
+		EstimatedCost:  15.0,
+		StatusCode:     200,
+		ClientName:     "client-fintech",
+		CreatedAt:      time.Now().UTC(),
+	})
+
+	// 1. GET /v1/admin/budgets
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/budgets", nil)
+	req.Header.Set("Authorization", "Bearer fintech-key")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp AdminBudgetsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	if len(resp.Data) != 1 {
+		t.Fatalf("expected 1 budget status, got %d", len(resp.Data))
+	}
+
+	b := resp.Data[0]
+	if b.ClientName != "client-fintech" {
+		t.Errorf("expected client-fintech, got %s", b.ClientName)
+	}
+	if b.MaxSpend != 50.0 || b.SoftLimit != 40.0 {
+		t.Errorf("expected MaxSpend 50 and SoftLimit 40, got %f / %f", b.MaxSpend, b.SoftLimit)
+	}
+	if b.CurrentSpend < 14.99 || b.CurrentSpend > 15.01 {
+		t.Errorf("expected CurrentSpend 15.0, got %f", b.CurrentSpend)
+	}
+	if b.RemainingSpend < 34.99 || b.RemainingSpend > 35.01 {
+		t.Errorf("expected RemainingSpend 35.0, got %f", b.RemainingSpend)
+	}
+	if b.SoftReached || b.HardExceeded {
+		t.Errorf("expected SoftReached=false and HardExceeded=false")
+	}
+
+	// 2. Method not allowed for POST
+	reqPost := httptest.NewRequest(http.MethodPost, "/v1/admin/budgets", nil)
+	reqPost.Header.Set("Authorization", "Bearer fintech-key")
+	rrPost := httptest.NewRecorder()
+	srv.ServeHTTP(rrPost, reqPost)
+
+	if rrPost.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 Method Not Allowed, got %d", rrPost.Code)
+	}
+}
+
 
 
 

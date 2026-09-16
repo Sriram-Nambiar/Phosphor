@@ -113,6 +113,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/metrics", s.handleMetrics)
 	s.mux.HandleFunc("/v1/models", s.handleModels)
 	s.mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
+	s.mux.HandleFunc("/v1/admin/budgets", s.handleAdminBudgets)
 }
 
 func (s *Server) requestIDMiddleware(next http.Handler) http.Handler {
@@ -512,6 +513,76 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(ModelListResponse{
 		Object: "list",
 		Data:   models,
+	})
+}
+
+type ClientBudgetStatus struct {
+	ClientName     string  `json:"client_name"`
+	MaxSpend       float64 `json:"max_spend"`
+	SoftLimit      float64 `json:"soft_limit"`
+	CurrentSpend   float64 `json:"current_spend"`
+	ResetPeriod    string  `json:"reset_period"`
+	WindowStart    string  `json:"window_start,omitempty"`
+	RemainingSpend float64 `json:"remaining_spend"`
+	SoftReached    bool    `json:"soft_reached"`
+	HardExceeded   bool    `json:"hard_exceeded"`
+}
+
+type AdminBudgetsResponse struct {
+	Object string               `json:"object"`
+	Data   []ClientBudgetStatus `json:"data"`
+}
+
+func (s *Server) handleAdminBudgets(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "Method not allowed. Only GET is supported.", "invalid_request_error", "method_not_allowed")
+		return
+	}
+
+	var results []ClientBudgetStatus
+	now := time.Now().UTC()
+
+	for _, k := range s.cfg.Auth.Keys {
+		if k.Budget == nil || k.Budget.MaxSpend <= 0 {
+			continue
+		}
+		var currentSpend float64
+		windowStart := budget.WindowStart(k.Budget.ResetPeriod, now)
+		if s.database != nil {
+			spend, err := s.database.GetClientSpend(r.Context(), k.Name, windowStart)
+			if err == nil {
+				currentSpend = spend
+			}
+		}
+
+		eval := budget.Evaluate(k.Budget, currentSpend)
+		remaining := k.Budget.MaxSpend - currentSpend
+		if remaining < 0 {
+			remaining = 0
+		}
+
+		windowStr := ""
+		if !windowStart.IsZero() {
+			windowStr = windowStart.Format(time.RFC3339)
+		}
+
+		results = append(results, ClientBudgetStatus{
+			ClientName:     k.Name,
+			MaxSpend:       k.Budget.MaxSpend,
+			SoftLimit:      k.Budget.SoftLimit,
+			CurrentSpend:   currentSpend,
+			ResetPeriod:    k.Budget.ResetPeriod,
+			WindowStart:    windowStr,
+			RemainingSpend: remaining,
+			SoftReached:    eval.SoftReached,
+			HardExceeded:   !eval.Allowed,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(AdminBudgetsResponse{
+		Object: "list",
+		Data:   results,
 	})
 }
 
