@@ -58,7 +58,19 @@ func (b *BackoffPolicy) ComputeBackoff(attempt int) time.Duration {
 
 // Sleep pauses execution for the computed jittered backoff duration, or aborts early if context is canceled.
 func (b *BackoffPolicy) Sleep(ctx context.Context, attempt int) error {
-	delay := b.ComputeBackoff(attempt)
+	return b.SleepWithRetryAfter(ctx, attempt, 0)
+}
+
+// SleepWithRetryAfter pauses execution for either the specified retryAfter duration (if positive)
+// or the computed exponential backoff duration. It caps the duration at maxBackoff to prevent hung requests.
+func (b *BackoffPolicy) SleepWithRetryAfter(ctx context.Context, attempt int, retryAfter time.Duration) error {
+	delay := retryAfter
+	if delay <= 0 {
+		delay = b.ComputeBackoff(attempt)
+	} else if delay > b.maxBackoff {
+		delay = b.maxBackoff
+	}
+
 	if delay <= 0 {
 		return nil
 	}
@@ -73,3 +85,4 @@ func (b *BackoffPolicy) Sleep(ctx context.Context, attempt int) error {
 		return nil
 	}
 }
+

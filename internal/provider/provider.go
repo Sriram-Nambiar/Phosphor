@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Sriram-Nambiar/Phosphor/internal/config"
 )
@@ -172,10 +176,48 @@ type HTTPError struct {
 	Status     string
 	Body       string
 	Provider   string
+	Header     http.Header
+	RetryAfter time.Duration
 }
 
 func (e *HTTPError) Error() string {
 	return fmt.Sprintf("upstream %s returned HTTP %d: %s", e.Provider, e.StatusCode, e.Body)
+}
+
+// ParseRetryAfter parses standard HTTP Retry-After header string.
+// It supports both delta-seconds (e.g. "5", "1.5") and HTTP-date RFC1123 format.
+func ParseRetryAfter(val string) time.Duration {
+	val = strings.TrimSpace(val)
+	if val == "" {
+		return 0
+	}
+	if seconds, err := strconv.ParseFloat(val, 64); err == nil && seconds > 0 {
+		return time.Duration(seconds * float64(time.Second))
+	}
+	if t, err := http.ParseTime(val); err == nil {
+		diff := time.Until(t)
+		if diff > 0 {
+			return diff
+		}
+	}
+	return 0
+}
+
+// ExtractRetryAfter inspects an error and returns the upstream Retry-After duration if available.
+func ExtractRetryAfter(err error) time.Duration {
+	if err == nil {
+		return 0
+	}
+	var httpErr *HTTPError
+	if errors.As(err, &httpErr) {
+		if httpErr.RetryAfter > 0 {
+			return httpErr.RetryAfter
+		}
+		if httpErr.Header != nil {
+			return ParseRetryAfter(httpErr.Header.Get("Retry-After"))
+		}
+	}
+	return 0
 }
 
 // IsRateLimit checks if an error represents an HTTP 429 rate limit.

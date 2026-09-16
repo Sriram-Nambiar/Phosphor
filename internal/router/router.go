@@ -630,9 +630,10 @@ func (r *Router) Execute(ctx context.Context, req *provider.ChatRequest, request
 				_ = r.database.LogFailover(ctx, &trace)
 			}
 
-			// Apply exponential backoff with full jitter on transient failure
+			// Apply exponential backoff with full jitter on transient failure (respecting Retry-After header)
 			if IsTransientFailure(attemptErr) && r.backoff != nil {
-				_ = r.backoff.Sleep(ctx, i)
+				retryAfter := provider.ExtractRetryAfter(attemptErr)
+				_ = r.backoff.SleepWithRetryAfter(ctx, i, retryAfter)
 			}
 		}
 	}
@@ -767,9 +768,10 @@ func (r *Router) ExecuteStream(ctx context.Context, req *provider.ChatRequest, r
 				_ = r.database.LogFailover(ctx, &trace)
 			}
 
-			// Apply exponential backoff with full jitter on transient failure
+			// Apply exponential backoff with full jitter on transient failure (respecting Retry-After header)
 			if IsTransientFailure(attemptErr) && r.backoff != nil {
-				_ = r.backoff.Sleep(ctx, i)
+				retryAfter := provider.ExtractRetryAfter(attemptErr)
+				_ = r.backoff.SleepWithRetryAfter(ctx, i, retryAfter)
 			}
 		}
 	}

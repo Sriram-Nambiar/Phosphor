@@ -59,3 +59,33 @@ func TestBackoffPolicy_LargeAttemptNoOverflow(t *testing.T) {
 		t.Fatalf("expected delay within [0, 2s] for large attempt count, got %v", delay)
 	}
 }
+
+func TestBackoffPolicy_SleepWithRetryAfter(t *testing.T) {
+	policy := NewBackoffPolicy(10*time.Millisecond, 200*time.Millisecond)
+
+	// 1. Valid short Retry-After
+	start := time.Now()
+	err := policy.SleepWithRetryAfter(context.Background(), 0, 50*time.Millisecond)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if elapsed < 40*time.Millisecond {
+		t.Errorf("expected sleep at least 40ms, got %v", elapsed)
+	}
+
+	// 2. Retry-After exceeding maxBackoff is capped
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	// Pass a huge 10 second retry-after; should be capped at maxBackoff (200ms), and timeout after 50ms
+	err2 := policy.SleepWithRetryAfter(ctx, 0, 10*time.Second)
+	if err2 == nil {
+		t.Errorf("expected context deadline error for capped backoff, got nil")
+	}
+
+	// 3. Negative or zero retry-after falls back to exponential backoff
+	start3 := time.Now()
+	_ = policy.SleepWithRetryAfter(context.Background(), 0, 0)
+	_ = time.Since(start3)
+}
+

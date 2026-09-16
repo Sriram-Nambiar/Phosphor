@@ -191,7 +191,14 @@ func (p *CohereProvider) Send(ctx context.Context, req *ChatRequest) (*ChatRespo
 		if msg == "" {
 			msg = string(respBytes)
 		}
-		return nil, fmt.Errorf("cohere API returned HTTP %d: %s", resp.StatusCode, msg)
+		return nil, &HTTPError{
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+			Body:       msg,
+			Provider:   p.cfg.Name,
+			Header:     resp.Header,
+			RetryAfter: ParseRetryAfter(resp.Header.Get("Retry-After")),
+		}
 	}
 
 	var cohereResp cohereResponse
@@ -329,7 +336,14 @@ func (p *CohereProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan S
 		if msg == "" {
 			msg = string(respBytes)
 		}
-		return nil, fmt.Errorf("cohere stream API returned HTTP %d: %s", resp.StatusCode, msg)
+		return nil, &HTTPError{
+			StatusCode: resp.StatusCode,
+			Status:     resp.Status,
+			Body:       msg,
+			Provider:   p.cfg.Name,
+			Header:     resp.Header,
+			RetryAfter: ParseRetryAfter(resp.Header.Get("Retry-After")),
+		}
 	}
 
 	chunkChan := make(chan StreamChunk)

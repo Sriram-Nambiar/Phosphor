@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -410,4 +411,65 @@ func TestChatResponse_EnsureUsage(t *testing.T) {
 		t.Errorf("expected existing usage to be preserved, got %+v", respWithUsage.Usage)
 	}
 }
+
+func TestParseRetryAfter(t *testing.T) {
+	// Delta seconds
+	if d := ParseRetryAfter("5"); d != 5*time.Second {
+		t.Errorf("expected 5s, got %v", d)
+	}
+	if d := ParseRetryAfter("1.5"); d != 1500*time.Millisecond {
+		t.Errorf("expected 1.5s, got %v", d)
+	}
+
+	// Empty and invalid
+	if d := ParseRetryAfter(""); d != 0 {
+		t.Errorf("expected 0 for empty string, got %v", d)
+	}
+	if d := ParseRetryAfter("invalid-value"); d != 0 {
+		t.Errorf("expected 0 for invalid value, got %v", d)
+	}
+	if d := ParseRetryAfter("-10"); d != 0 {
+		t.Errorf("expected 0 for negative seconds, got %v", d)
+	}
+
+	// Future HTTP Date
+	future := time.Now().Add(10 * time.Second).UTC().Format(http.TimeFormat)
+	dFuture := ParseRetryAfter(future)
+	if dFuture <= 0 || dFuture > 12*time.Second {
+		t.Errorf("expected around 10s for HTTP-date, got %v", dFuture)
+	}
+
+	// Past HTTP Date
+	past := time.Now().Add(-10 * time.Second).UTC().Format(http.TimeFormat)
+	if dPast := ParseRetryAfter(past); dPast != 0 {
+		t.Errorf("expected 0 for past HTTP date, got %v", dPast)
+	}
+}
+
+func TestExtractRetryAfter(t *testing.T) {
+	// Nil error
+	if d := ExtractRetryAfter(nil); d != 0 {
+		t.Errorf("expected 0 for nil, got %v", d)
+	}
+
+	// Non-HTTPError
+	if d := ExtractRetryAfter(errors.New("generic error")); d != 0 {
+		t.Errorf("expected 0 for generic error, got %v", d)
+	}
+
+	// HTTPError with explicit RetryAfter
+	err1 := &HTTPError{StatusCode: 429, RetryAfter: 3 * time.Second}
+	if d := ExtractRetryAfter(err1); d != 3*time.Second {
+		t.Errorf("expected 3s from RetryAfter field, got %v", d)
+	}
+
+	// HTTPError with Header
+	hdr := make(http.Header)
+	hdr.Set("Retry-After", "7")
+	err2 := &HTTPError{StatusCode: 429, Header: hdr}
+	if d := ExtractRetryAfter(err2); d != 7*time.Second {
+		t.Errorf("expected 7s from Header, got %v", d)
+	}
+}
+
 

@@ -145,6 +145,8 @@ func (p *OllamaProvider) Send(ctx context.Context, req *ChatRequest) (*ChatRespo
 			Status:     resp.Status,
 			Body:       string(bodyBytes),
 			Provider:   p.cfg.Name,
+			Header:     resp.Header,
+			RetryAfter: ParseRetryAfter(resp.Header.Get("Retry-After")),
 		}
 	}
 
@@ -222,12 +224,15 @@ func (p *OllamaProvider) Stream(ctx context.Context, req *ChatRequest) (<-chan S
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
+		header := resp.Header
 		resp.Body.Close()
 		return nil, &HTTPError{
 			StatusCode: resp.StatusCode,
 			Status:     resp.Status,
 			Body:       string(bodyBytes),
 			Provider:   p.cfg.Name,
+			Header:     header,
+			RetryAfter: ParseRetryAfter(header.Get("Retry-After")),
 		}
 	}
 
