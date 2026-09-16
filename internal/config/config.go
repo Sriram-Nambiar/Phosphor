@@ -39,6 +39,7 @@ type Config struct {
 	Routing        RoutingConfig        `mapstructure:"routing" yaml:"routing"`
 	CircuitBreaker CircuitBreakerConfig `mapstructure:"circuit_breaker" yaml:"circuit_breaker"`
 	Cache          CacheConfig          `mapstructure:"cache" yaml:"cache"`
+	ModelAliases   map[string]string    `mapstructure:"model_aliases,omitempty" yaml:"model_aliases,omitempty"`
 	Providers      []ProviderConfig     `mapstructure:"providers" yaml:"providers"`
 	Models         map[string]ModelRule `mapstructure:"models" yaml:"models"`
 }
@@ -192,6 +193,7 @@ func DefaultConfig() *Config {
 			Capacity: 1000,
 			TTL:      5 * time.Minute,
 		},
+		ModelAliases: make(map[string]string),
 		Providers: []ProviderConfig{
 			{
 				Name:           "openai",
@@ -517,6 +519,18 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	for alias, target := range c.ModelAliases {
+		if strings.TrimSpace(alias) == "" {
+			errs = append(errs, "model_aliases contains an empty alias key")
+		}
+		if strings.TrimSpace(target) == "" {
+			errs = append(errs, fmt.Sprintf("model_aliases['%s'] target model cannot be empty", alias))
+		}
+		if alias == target {
+			errs = append(errs, fmt.Sprintf("model_aliases['%s'] cannot point to itself", alias))
+		}
+	}
+
 	if len(errs) > 0 {
 		return &ValidationError{Errors: errs}
 	}
@@ -562,6 +576,10 @@ func resolveEnvVars(cfg *Config) {
 		}
 		cfg.Models[mName] = rule
 	}
+
+	for alias, target := range cfg.ModelAliases {
+		cfg.ModelAliases[alias] = expandEnv(target)
+	}
 }
 
 func expandEnv(s string) string {
@@ -569,4 +587,23 @@ func expandEnv(s string) string {
 		return ""
 	}
 	return os.ExpandEnv(s)
+}
+
+// ResolveModelAlias resolves a model alias to its target canonical model name.
+// If an alias chain exists (e.g. fast -> gpt-4o-mini -> gpt-4o-mini-2024-07-18), it resolves recursively up to 5 hops to prevent cycles.
+func (c *Config) ResolveModelAlias(model string) string {
+	if c.ModelAliases == nil {
+		return model
+	}
+	current := model
+	visited := make(map[string]bool)
+	for i := 0; i < 5; i++ {
+		target, ok := c.ModelAliases[current]
+		if !ok || target == "" || visited[target] {
+			break
+		}
+		visited[current] = true
+		current = target
+	}
+	return current
 }

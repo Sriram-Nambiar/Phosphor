@@ -491,6 +491,11 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Collect aliases configured under model_aliases:
+	for alias := range s.cfg.ModelAliases {
+		modelMap[alias] = true
+	}
+
 	client, hasClient := auth.GetClientInfo(r.Context())
 
 	var models []ModelInfo
@@ -692,8 +697,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	requestedModel := chatReq.Model
+	canonicalModel := s.cfg.ResolveModelAlias(requestedModel)
+
 	if client, ok := auth.GetClientInfo(r.Context()); ok {
-		if !client.CanAccessModel(chatReq.Model) {
+		if !client.CanAccessModel(requestedModel) && !client.CanAccessModel(canonicalModel) {
 			writeOpenAIError(w, http.StatusForbidden, fmt.Sprintf("Your API key does not have permission to access model '%s'", chatReq.Model), "permission_error", "model_access_denied")
 			return
 		}
@@ -716,6 +724,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	requestID := GetRequestID(r.Context())
+	chatReq.Model = canonicalModel
 
 	if chatReq.Stream {
 		s.handleStreamingCompletions(w, r, &chatReq, requestID)

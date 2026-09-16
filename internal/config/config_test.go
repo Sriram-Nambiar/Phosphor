@@ -183,3 +183,56 @@ func TestConfig_DeepEnvExpansion(t *testing.T) {
 		t.Errorf("expected target model llama-11434, got %s", cfg.Models["default"].Targets[0].Model)
 	}
 }
+
+func TestConfig_ResolveModelAlias(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ModelAliases = map[string]string{
+		"fast":  "gpt-4o-mini",
+		"smart": "gpt-4o",
+		"best":  "smart", // Chained: best -> smart -> gpt-4o
+		"loop1": "loop2", // Cycle: loop1 -> loop2 -> loop1
+		"loop2": "loop1",
+	}
+
+	// 1. Direct alias
+	if resolved := cfg.ResolveModelAlias("fast"); resolved != "gpt-4o-mini" {
+		t.Errorf("expected gpt-4o-mini, got %s", resolved)
+	}
+
+	// 2. Chained alias
+	if resolved := cfg.ResolveModelAlias("best"); resolved != "gpt-4o" {
+		t.Errorf("expected gpt-4o, got %s", resolved)
+	}
+
+	// 3. No alias
+	if resolved := cfg.ResolveModelAlias("claude-3-5-sonnet"); resolved != "claude-3-5-sonnet" {
+		t.Errorf("expected claude-3-5-sonnet, got %s", resolved)
+	}
+
+	// 4. Cycle termination (must not hang)
+	resolvedLoop := cfg.ResolveModelAlias("loop1")
+	if resolvedLoop != "loop2" && resolvedLoop != "loop1" {
+		t.Errorf("expected cycle termination, got %s", resolvedLoop)
+	}
+}
+
+func TestConfig_ValidateModelAliases(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.ModelAliases = map[string]string{
+		"":     "gpt-4o",
+		"fast": "",
+		"self": "self",
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for bad model_aliases")
+	}
+	valErr, ok := err.(*ValidationError)
+	if !ok {
+		t.Fatalf("expected ValidationError, got %T", err)
+	}
+	if len(valErr.Errors) < 3 {
+		t.Errorf("expected at least 3 errors, got %d: %v", len(valErr.Errors), valErr.Errors)
+	}
+}

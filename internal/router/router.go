@@ -393,7 +393,7 @@ func (r *Router) ResolveCandidates(req *provider.ChatRequest) ([]CandidateTarget
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	model := req.Model
+	model := r.cfg.ResolveModelAlias(req.Model)
 	var targets []config.TargetModel
 	var fallbacks []string
 	var strategy config.RoutingStrategy = r.cfg.Routing.DefaultStrategy

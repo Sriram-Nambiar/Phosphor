@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1388,6 +1389,62 @@ func TestServer_AdminCacheEndpoints(t *testing.T) {
 	srv.ServeHTTP(rrBadClear, reqBadClear)
 	if rrBadClear.Code != http.StatusMethodNotAllowed {
 		t.Errorf("expected 405 Method Not Allowed for GET /v1/admin/cache/clear")
+	}
+}
+
+func TestServer_ModelAliasing(t *testing.T) {
+	var receivedModel string
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var chatReq provider.ChatRequest
+		_ = json.Unmarshal(body, &chatReq)
+		receivedModel = chatReq.Model
+
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id":"cmpl-alias","choices":[{"message":{"role":"assistant","content":"alias works"}}]}`)
+	})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	srv.cfg.ModelAliases = map[string]string{
+		"turbo": "gpt-4o",
+	}
+
+	// 1. GET /v1/models lists the alias
+	reqModels := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	rrModels := httptest.NewRecorder()
+	srv.ServeHTTP(rrModels, reqModels)
+
+	if rrModels.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for /v1/models, got %d", rrModels.Code)
+	}
+	var modelList ModelListResponse
+	if err := json.Unmarshal(rrModels.Body.Bytes(), &modelList); err != nil {
+		t.Fatalf("failed to decode models: %v", err)
+	}
+
+	foundAlias := false
+	for _, m := range modelList.Data {
+		if m.ID == "turbo" {
+			foundAlias = true
+			break
+		}
+	}
+	if !foundAlias {
+		t.Errorf("expected alias 'turbo' to be present in /v1/models response")
+	}
+
+	// 2. POST /v1/chat/completions with alias "turbo"
+	payload := `{"model":"turbo","messages":[{"role":"user","content":"test alias"}]}`
+	reqChat := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	rrChat := httptest.NewRecorder()
+	srv.ServeHTTP(rrChat, reqChat)
+
+	if rrChat.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for alias request, got %d: %s", rrChat.Code, rrChat.Body.String())
+	}
+	if receivedModel != "gpt-4o" {
+		t.Errorf("expected upstream to receive canonical model 'gpt-4o', got '%s'", receivedModel)
 	}
 }
 
