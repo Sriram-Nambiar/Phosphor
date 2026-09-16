@@ -1608,6 +1608,40 @@ func TestServer_PromptGuard(t *testing.T) {
 	}
 }
 
+func TestServer_ChatCompletions_FallbackUsageEstimation(t *testing.T) {
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Response omitting "usage" field completely
+		fmt.Fprintln(w, `{"id":"cmpl-no-usage","choices":[{"message":{"role":"assistant","content":"This response has no usage object."}}]}`)
+	})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	payload := `{"model":"gpt-4o","messages":[{"role":"user","content":"Count these tokens for me please."}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp provider.ChatResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Usage.PromptTokens <= 0 {
+		t.Errorf("expected positive fallback prompt tokens, got %d", resp.Usage.PromptTokens)
+	}
+	if resp.Usage.CompletionTokens <= 0 {
+		t.Errorf("expected positive fallback completion tokens, got %d", resp.Usage.CompletionTokens)
+	}
+	if resp.Usage.TotalTokens != resp.Usage.PromptTokens+resp.Usage.CompletionTokens {
+		t.Errorf("expected total tokens sum (%d + %d), got %d", resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens)
+	}
+}
+
 
 
 

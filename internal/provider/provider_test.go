@@ -360,3 +360,54 @@ func BenchmarkWriteSSEChunk(b *testing.B) {
 	}
 }
 
+func TestChatResponse_EnsureUsage(t *testing.T) {
+	// Case 1: Empty usage gets populated
+	resp := &ChatResponse{
+		Choices: []ChatChoice{
+			{
+				Index: 0,
+				Message: ChatMessage{
+					Role:    "assistant",
+					Content: "Hello world! How can I help you today?",
+				},
+			},
+		},
+	}
+
+	resp.EnsureUsage(15)
+
+	if resp.Usage.PromptTokens != 15 {
+		t.Errorf("expected prompt tokens 15, got %d", resp.Usage.PromptTokens)
+	}
+	if resp.Usage.CompletionTokens <= 0 {
+		t.Errorf("expected positive completion tokens, got %d", resp.Usage.CompletionTokens)
+	}
+	if resp.Usage.TotalTokens != resp.Usage.PromptTokens+resp.Usage.CompletionTokens {
+		t.Errorf("expected total tokens sum, got %d", resp.Usage.TotalTokens)
+	}
+
+	// Case 2: Pre-existing usage is preserved untouched
+	respWithUsage := &ChatResponse{
+		Choices: []ChatChoice{
+			{
+				Index: 0,
+				Message: ChatMessage{
+					Role:    "assistant",
+					Content: "Hello",
+				},
+			},
+		},
+		Usage: Usage{
+			PromptTokens:     100,
+			CompletionTokens: 50,
+			TotalTokens:      150,
+		},
+	}
+
+	respWithUsage.EnsureUsage(25)
+
+	if respWithUsage.Usage.PromptTokens != 100 || respWithUsage.Usage.CompletionTokens != 50 || respWithUsage.Usage.TotalTokens != 150 {
+		t.Errorf("expected existing usage to be preserved, got %+v", respWithUsage.Usage)
+	}
+}
+

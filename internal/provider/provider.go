@@ -110,6 +110,30 @@ type ChatResponse struct {
 	Usage   Usage        `json:"usage"`
 }
 
+// EnsureUsage populates missing or zero token usage in the response using heuristic estimation.
+func (resp *ChatResponse) EnsureUsage(promptTokens int) {
+	if resp == nil {
+		return
+	}
+	if resp.Usage.PromptTokens <= 0 {
+		resp.Usage.PromptTokens = promptTokens
+	}
+	if resp.Usage.CompletionTokens <= 0 {
+		totalChars := 0
+		for _, c := range resp.Choices {
+			totalChars += len(c.Message.Content)
+		}
+		estComp := totalChars / 4
+		if estComp < 1 && totalChars > 0 {
+			estComp = 1
+		}
+		resp.Usage.CompletionTokens = estComp
+	}
+	if resp.Usage.TotalTokens <= 0 {
+		resp.Usage.TotalTokens = resp.Usage.PromptTokens + resp.Usage.CompletionTokens
+	}
+}
+
 type StreamDelta struct {
 	Role    string `json:"role,omitempty"`
 	Content string `json:"content,omitempty"`

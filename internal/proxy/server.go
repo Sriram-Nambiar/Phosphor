@@ -882,16 +882,12 @@ func (s *Server) handleNonStreamingCompletions(w http.ResponseWriter, r *http.Re
 		}
 
 		resp := result.Response
+		if resp.Usage.TotalTokens <= 0 {
+			resp.EnsureUsage(router.EstimatePromptTokens(req))
+		}
 		promptTokens := resp.Usage.PromptTokens
 		compTokens := resp.Usage.CompletionTokens
 		totalTokens := resp.Usage.TotalTokens
-		if promptTokens == 0 {
-			promptTokens = router.EstimatePromptTokens(req)
-			if len(resp.Choices) > 0 {
-				compTokens = len(resp.Choices[0].Message.Content) / 4
-			}
-			totalTokens = promptTokens + compTokens
-		}
 
 		cost := router.CalculateCost(promptTokens, compTokens, result.Candidate.Cost)
 
@@ -1201,10 +1197,10 @@ streamLoop:
 	// Compute token usage
 	promptTokens := router.EstimatePromptTokens(req)
 	compTokens := completionChars / 4
-	if compTokens < 1 {
+	if compTokens < 1 && completionChars > 0 {
 		compTokens = 1
 	}
-	if finalUsage != nil {
+	if finalUsage != nil && finalUsage.TotalTokens > 0 {
 		promptTokens = finalUsage.PromptTokens
 		compTokens = finalUsage.CompletionTokens
 	}
