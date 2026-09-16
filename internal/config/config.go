@@ -48,12 +48,19 @@ type AuthConfig struct {
 	Keys    []APIKeyConfig `mapstructure:"keys" yaml:"keys"`
 }
 
+type BudgetConfig struct {
+	MaxSpend    float64 `mapstructure:"max_spend" yaml:"max_spend"`
+	SoftLimit   float64 `mapstructure:"soft_limit,omitempty" yaml:"soft_limit,omitempty"`
+	ResetPeriod string  `mapstructure:"reset_period,omitempty" yaml:"reset_period,omitempty"`
+}
+
 type APIKeyConfig struct {
-	Key           string   `mapstructure:"key" yaml:"key"`
-	KeyHash       string   `mapstructure:"key_hash" yaml:"key_hash"`
-	Name          string   `mapstructure:"name" yaml:"name"`
-	AllowedModels []string `mapstructure:"allowed_models" yaml:"allowed_models"`
-	RateLimit     int      `mapstructure:"rate_limit" yaml:"rate_limit"`
+	Key           string        `mapstructure:"key" yaml:"key"`
+	KeyHash       string        `mapstructure:"key_hash" yaml:"key_hash"`
+	Name          string        `mapstructure:"name" yaml:"name"`
+	AllowedModels []string      `mapstructure:"allowed_models" yaml:"allowed_models"`
+	RateLimit     int           `mapstructure:"rate_limit" yaml:"rate_limit"`
+	Budget        *BudgetConfig `mapstructure:"budget,omitempty" yaml:"budget,omitempty"`
 }
 
 type CORSConfig struct {
@@ -399,6 +406,17 @@ func (c *Config) Validate() error {
 		for i, k := range c.Auth.Keys {
 			if strings.TrimSpace(k.Key) == "" && strings.TrimSpace(k.KeyHash) == "" {
 				errs = append(errs, fmt.Sprintf("auth.keys[%d] must specify either key or key_hash", i))
+			}
+			if k.Budget != nil {
+				if k.Budget.MaxSpend < 0 {
+					errs = append(errs, fmt.Sprintf("auth.keys[%d].budget.max_spend cannot be negative", i))
+				}
+				if k.Budget.SoftLimit < 0 {
+					errs = append(errs, fmt.Sprintf("auth.keys[%d].budget.soft_limit cannot be negative", i))
+				}
+				if k.Budget.SoftLimit > k.Budget.MaxSpend && k.Budget.MaxSpend > 0 {
+					errs = append(errs, fmt.Sprintf("auth.keys[%d].budget.soft_limit cannot exceed max_spend", i))
+				}
 			}
 		}
 	}
