@@ -76,3 +76,16 @@ func RedactHeaders(headers map[string][]string) map[string][]string {
 	}
 	return sanitized
 }
+
+// RedactAPIKey masks a secret key, preserving only leading and trailing characters if long enough.
+func RedactAPIKey(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
+	}
+	if len(key) <= 8 {
+		return "[REDACTED]"
+	}
+	return key[:4] + "..." + key[len(key)-4:]
+}
+
