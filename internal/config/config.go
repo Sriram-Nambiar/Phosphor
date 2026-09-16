@@ -35,6 +35,7 @@ const (
 type Config struct {
 	Server         ServerConfig         `mapstructure:"server" yaml:"server"`
 	Auth           AuthConfig           `mapstructure:"auth" yaml:"auth"`
+	Security       SecurityConfig       `mapstructure:"security" yaml:"security"`
 	Database       DatabaseConfig       `mapstructure:"database" yaml:"database"`
 	Routing        RoutingConfig        `mapstructure:"routing" yaml:"routing"`
 	CircuitBreaker CircuitBreakerConfig `mapstructure:"circuit_breaker" yaml:"circuit_breaker"`
@@ -42,6 +43,11 @@ type Config struct {
 	ModelAliases   map[string]string    `mapstructure:"model_aliases,omitempty" yaml:"model_aliases,omitempty"`
 	Providers      []ProviderConfig     `mapstructure:"providers" yaml:"providers"`
 	Models         map[string]ModelRule `mapstructure:"models" yaml:"models"`
+}
+
+type SecurityConfig struct {
+	EnablePromptGuard bool    `mapstructure:"enable_prompt_guard" yaml:"enable_prompt_guard"`
+	BlockThreshold    float64 `mapstructure:"block_threshold" yaml:"block_threshold"`
 }
 
 type AuthConfig struct {
@@ -171,6 +177,10 @@ func DefaultConfig() *Config {
 		Auth: AuthConfig{
 			Enabled: false,
 			Keys:    []APIKeyConfig{},
+		},
+		Security: SecurityConfig{
+			EnablePromptGuard: false,
+			BlockThreshold:    0.7,
 		},
 		Database: DatabaseConfig{
 			Path: dbPath,
@@ -348,6 +358,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.cors.allow_credentials", true)
 	v.SetDefault("server.cors.max_age_seconds", 86400)
 	v.SetDefault("auth.enabled", false)
+	v.SetDefault("security.enable_prompt_guard", false)
+	v.SetDefault("security.block_threshold", 0.7)
 	v.SetDefault("database.path", dbPath)
 	v.SetDefault("routing.default_strategy", "priority")
 	v.SetDefault("routing.timeout_seconds", 30)
@@ -463,6 +475,12 @@ func (c *Config) Validate() error {
 		}
 		if c.Cache.TTL < 0 {
 			errs = append(errs, "cache.ttl cannot be negative")
+		}
+	}
+
+	if c.Security.EnablePromptGuard {
+		if c.Security.BlockThreshold < 0 || c.Security.BlockThreshold > 1.0 {
+			errs = append(errs, "security.block_threshold must be between 0.0 and 1.0")
 		}
 	}
 

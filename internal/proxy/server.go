@@ -70,6 +70,7 @@ type Server struct {
 	database    *db.DB
 	cache       *cache.LRUCache
 	dedup       *cache.Deduplicator
+	detector    *security.PromptDetector
 	rateLimiter *security.ClientRateLimiter
 	server      *http.Server
 	mux         *http.ServeMux
@@ -85,12 +86,18 @@ func NewServer(cfg *config.Config, r *router.Router, database *db.DB) *Server {
 		}
 	}
 
+	var detector *security.PromptDetector
+	if cfg.Security.EnablePromptGuard {
+		detector = security.NewPromptDetector(cfg.Security.BlockThreshold)
+	}
+
 	s := &Server{
 		cfg:         cfg,
 		router:      r,
 		database:    database,
 		cache:       c,
 		dedup:       cache.NewDeduplicator(),
+		detector:    detector,
 		rateLimiter: security.NewClientRateLimiter(0),
 		mux:         http.NewServeMux(),
 	}
@@ -726,6 +733,46 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	requestID := GetRequestID(r.Context())
+
+	// Security Guardrails: Scan input for prompt injection and jailbreaks
+	if s.detector != nil {
+		var combinedText strings.Builder
+		for _, m := range chatReq.Messages {
+			combinedText.WriteString(m.Content)
+			combinedText.WriteString(" ")
+		}
+		scan := s.detector.Scan(combinedText.String())
+		w.Header().Set("X-Security-Risk", fmt.Sprintf("%.2f", scan.RiskScore))
+
+		if !scan.Safe {
+			reason := "prompt injection pattern detected"
+			if len(scan.Matches) > 0 {
+				reason = scan.Matches[0].Description
+			}
+			if s.database != nil {
+				var clientName string
+				if client, ok := auth.GetClientInfo(r.Context()); ok {
+					clientName = client.Name
+				}
+				logCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = s.database.LogRequest(logCtx, &db.RequestLog{
+					ID:             requestID,
+					CreatedAt:      time.Now().UTC(),
+					ModelRequested: chatReq.Model,
+					Provider:       "security_guardrail",
+					ModelRouted:    canonicalModel,
+					StatusCode:     http.StatusBadRequest,
+					Stream:         chatReq.Stream,
+					ErrorMsg:       fmt.Sprintf("Blocked by security guardrail: %s", reason),
+					ClientName:     clientName,
+				})
+			}
+			writeOpenAIError(w, http.StatusBadRequest, fmt.Sprintf("Request rejected by security guardrails: %s", reason), "invalid_request_error", "prompt_injection_detected")
+			return
+		}
+	}
+
 	chatReq.Model = canonicalModel
 
 	if chatReq.Stream {
