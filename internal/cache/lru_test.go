@@ -97,3 +97,29 @@ func TestLRUCache_ConcurrentAccess(t *testing.T) {
 		t.Fatalf("cache exceeded capacity: %d", c.Len())
 	}
 }
+
+func TestLRUCache_ClearAndCapacity(t *testing.T) {
+	c := NewLRUCache(50, 5*time.Minute)
+	if c.Capacity() != 50 {
+		t.Errorf("expected capacity 50, got %d", c.Capacity())
+	}
+
+	c.Set("k1", []byte("v1"), 0)
+	c.Set("k2", []byte("v2"), 0)
+	c.Get("k1") // 1 hit
+
+	hits, misses, size := c.Stats()
+	if hits != 1 || misses != 0 || size != 2 {
+		t.Errorf("unexpected stats before clear: hits=%d, misses=%d, size=%d", hits, misses, size)
+	}
+
+	c.Clear()
+
+	if c.Len() != 0 {
+		t.Errorf("expected len 0 after Clear, got %d", c.Len())
+	}
+	hits, misses, size = c.Stats()
+	if hits != 0 || misses != 0 || size != 0 {
+		t.Errorf("unexpected stats after clear: hits=%d, misses=%d, size=%d", hits, misses, size)
+	}
+}

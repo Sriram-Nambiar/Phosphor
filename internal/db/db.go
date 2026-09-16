@@ -869,6 +869,18 @@ func (d *DB) PruneExpiredCache(ctx context.Context) (int64, error) {
 	return res.RowsAffected()
 }
 
+// ClearCache deletes all entries from the persistent response_cache table.
+func (d *DB) ClearCache(ctx context.Context) (int64, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	res, err := d.db.ExecContext(ctx, "DELETE FROM response_cache")
+	if err != nil {
+		return 0, fmt.Errorf("failed to clear response cache: %w", err)
+	}
+	return res.RowsAffected()
+}
+
 // GetClientSpend returns the total estimated cost for a given client since the specified time window.
 func (d *DB) GetClientSpend(ctx context.Context, clientName string, since time.Time) (float64, error) {
 	_ = d.Flush(ctx)

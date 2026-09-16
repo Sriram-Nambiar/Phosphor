@@ -114,6 +114,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/v1/models", s.handleModels)
 	s.mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
 	s.mux.HandleFunc("/v1/admin/budgets", s.handleAdminBudgets)
+	s.mux.HandleFunc("/v1/admin/cache/stats", s.handleAdminCacheStats)
+	s.mux.HandleFunc("/v1/admin/cache/clear", s.handleAdminCacheClear)
 }
 
 func (s *Server) requestIDMiddleware(next http.Handler) http.Handler {
@@ -583,6 +585,81 @@ func (s *Server) handleAdminBudgets(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(AdminBudgetsResponse{
 		Object: "list",
 		Data:   results,
+	})
+}
+
+type AdminCacheStatsResponse struct {
+	Enabled    bool    `json:"enabled"`
+	Capacity   int     `json:"capacity,omitempty"`
+	Size       int     `json:"size,omitempty"`
+	Hits       int64   `json:"hits,omitempty"`
+	Misses     int64   `json:"misses,omitempty"`
+	HitRatio   float64 `json:"hit_ratio,omitempty"`
+	TTLSeconds int     `json:"ttl_seconds,omitempty"`
+}
+
+func (s *Server) handleAdminCacheStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "Method not allowed. Only GET is supported.", "invalid_request_error", "method_not_allowed")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if s.cache == nil {
+		_ = json.NewEncoder(w).Encode(AdminCacheStatsResponse{
+			Enabled: false,
+		})
+		return
+	}
+
+	hits, misses, size := s.cache.Stats()
+	var ratio float64
+	total := hits + misses
+	if total > 0 {
+		ratio = float64(hits) / float64(total)
+	}
+
+	_ = json.NewEncoder(w).Encode(AdminCacheStatsResponse{
+		Enabled:    true,
+		Capacity:   s.cache.Capacity(),
+		Size:       size,
+		Hits:       hits,
+		Misses:     misses,
+		HitRatio:   ratio,
+		TTLSeconds: int(s.cfg.Cache.TTL.Seconds()),
+	})
+}
+
+type AdminCacheClearResponse struct {
+	Status        string `json:"status"`
+	ClearedL1     int    `json:"cleared_l1"`
+	ClearedL2Rows int64  `json:"cleared_l2_rows"`
+}
+
+func (s *Server) handleAdminCacheClear(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "Method not allowed. Only POST is supported.", "invalid_request_error", "method_not_allowed")
+		return
+	}
+
+	clearedL1 := 0
+	if s.cache != nil {
+		clearedL1 = s.cache.Len()
+		s.cache.Clear()
+	}
+
+	var clearedL2 int64
+	if s.database != nil {
+		if rows, err := s.database.ClearCache(r.Context()); err == nil {
+			clearedL2 = rows
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(AdminCacheClearResponse{
+		Status:        "ok",
+		ClearedL1:     clearedL1,
+		ClearedL2Rows: clearedL2,
 	})
 }
 

@@ -175,11 +175,28 @@ func (c *LRUCache) Len() int {
 	return c.evictList.Len()
 }
 
+// Capacity returns the maximum configured capacity of the cache.
+func (c *LRUCache) Capacity() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.capacity
+}
+
 // Stats returns hit, miss, and size metrics.
 func (c *LRUCache) Stats() (hits, misses int64, size int) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.hits, c.misses, c.evictList.Len()
+}
+
+// Clear flushes all in-memory cache entries and resets hit/miss counters.
+func (c *LRUCache) Clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.items = make(map[string]*CacheItem)
+	c.evictList.Init()
+	c.hits = 0
+	c.misses = 0
 }
 
 // PurgeExpired evicts all expired items from the cache.

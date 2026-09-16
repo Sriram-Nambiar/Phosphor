@@ -1292,6 +1292,105 @@ func TestServer_AdminBudgets(t *testing.T) {
 	}
 }
 
+func TestServer_AdminCacheEndpoints(t *testing.T) {
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id":"cmpl-cache-admin","choices":[{"message":{"role":"assistant","content":"cache ok"}}],"usage":{"prompt_tokens":5,"completion_tokens":5,"total_tokens":10}}`)
+	})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	srv.cfg.Cache.Enabled = true
+	srv.cfg.Cache.Capacity = 200
+	srv.cfg.Cache.TTL = 5 * time.Minute
+	srv.cache = cache.NewLRUCache(200, 5*time.Minute)
+	srv.cache.SetPersistentStore(dbInstance)
+
+	// 1. Initial stats
+	reqStats := httptest.NewRequest(http.MethodGet, "/v1/admin/cache/stats", nil)
+	rrStats := httptest.NewRecorder()
+	srv.ServeHTTP(rrStats, reqStats)
+
+	if rrStats.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for cache stats, got %d", rrStats.Code)
+	}
+	var statsResp AdminCacheStatsResponse
+	if err := json.Unmarshal(rrStats.Body.Bytes(), &statsResp); err != nil {
+		t.Fatalf("failed to parse cache stats: %v", err)
+	}
+	if !statsResp.Enabled || statsResp.Capacity != 200 || statsResp.Size != 0 {
+		t.Errorf("unexpected initial cache stats: %+v", statsResp)
+	}
+
+	// 2. Perform chat completion to generate a cache entry
+	payload := `{"model":"gpt-4o","messages":[{"role":"user","content":"hello cache"}]}`
+	reqChat1 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	rrChat1 := httptest.NewRecorder()
+	srv.ServeHTTP(rrChat1, reqChat1)
+	if rrChat1.Code != http.StatusOK {
+		t.Fatalf("chat1 failed: %d", rrChat1.Code)
+	}
+
+	// 3. Repeat chat completion to generate a cache hit
+	reqChat2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	rrChat2 := httptest.NewRecorder()
+	srv.ServeHTTP(rrChat2, reqChat2)
+	if rrChat2.Code != http.StatusOK {
+		t.Fatalf("chat2 failed: %d", rrChat2.Code)
+	}
+
+	// 4. Verify stats updated (size 1, hit 1, miss 1)
+	rrStats2 := httptest.NewRecorder()
+	srv.ServeHTTP(rrStats2, reqStats)
+	var statsResp2 AdminCacheStatsResponse
+	_ = json.Unmarshal(rrStats2.Body.Bytes(), &statsResp2)
+	if statsResp2.Hits != 1 || statsResp2.Misses != 1 || statsResp2.Size != 1 {
+		t.Errorf("expected 1 hit, 1 miss, 1 item; got %+v", statsResp2)
+	}
+	if statsResp2.HitRatio < 0.49 || statsResp2.HitRatio > 0.51 {
+		t.Errorf("expected ~0.5 hit ratio, got %f", statsResp2.HitRatio)
+	}
+
+	// 5. Clear cache
+	reqClear := httptest.NewRequest(http.MethodPost, "/v1/admin/cache/clear", nil)
+	rrClear := httptest.NewRecorder()
+	srv.ServeHTTP(rrClear, reqClear)
+	if rrClear.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for cache clear, got %d", rrClear.Code)
+	}
+	var clearResp AdminCacheClearResponse
+	if err := json.Unmarshal(rrClear.Body.Bytes(), &clearResp); err != nil {
+		t.Fatalf("failed to decode clear response: %v", err)
+	}
+	if clearResp.Status != "ok" || clearResp.ClearedL1 != 1 {
+		t.Errorf("unexpected clear response: %+v", clearResp)
+	}
+
+	// 6. Verify stats are zeroed after clear
+	rrStats3 := httptest.NewRecorder()
+	srv.ServeHTTP(rrStats3, reqStats)
+	var statsResp3 AdminCacheStatsResponse
+	_ = json.Unmarshal(rrStats3.Body.Bytes(), &statsResp3)
+	if statsResp3.Size != 0 || statsResp3.Hits != 0 || statsResp3.Misses != 0 {
+		t.Errorf("expected empty cache after clear, got %+v", statsResp3)
+	}
+
+	// 7. Method validations
+	reqBadStats := httptest.NewRequest(http.MethodPost, "/v1/admin/cache/stats", nil)
+	rrBadStats := httptest.NewRecorder()
+	srv.ServeHTTP(rrBadStats, reqBadStats)
+	if rrBadStats.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 Method Not Allowed for POST /v1/admin/cache/stats")
+	}
+
+	reqBadClear := httptest.NewRequest(http.MethodGet, "/v1/admin/cache/clear", nil)
+	rrBadClear := httptest.NewRecorder()
+	srv.ServeHTTP(rrBadClear, reqBadClear)
+	if rrBadClear.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 Method Not Allowed for GET /v1/admin/cache/clear")
+	}
+}
+
 
 
 
