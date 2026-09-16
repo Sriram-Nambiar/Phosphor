@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Sriram-Nambiar/Phosphor/internal/config"
@@ -14,9 +15,12 @@ import (
 )
 
 var (
-	logsDBPath      string
-	logsLimit       int
+	logsDBPath        string
+	logsLimit         int
 	logsFailoversOnly bool
+	logsClient        string
+	logsModel         string
+	logsProvider      string
 
 	logsCmd = &cobra.Command{
 		Use:   "logs",
@@ -29,6 +33,9 @@ func init() {
 	logsCmd.Flags().StringVar(&logsDBPath, "db", "", "Path to SQLite database file")
 	logsCmd.Flags().IntVarP(&logsLimit, "limit", "n", 20, "Number of records to display")
 	logsCmd.Flags().BoolVarP(&logsFailoversOnly, "failovers", "f", false, "Display only failover traces")
+	logsCmd.Flags().StringVar(&logsClient, "client", "", "Filter requests by client name")
+	logsCmd.Flags().StringVar(&logsModel, "model", "", "Filter requests by model name")
+	logsCmd.Flags().StringVar(&logsProvider, "provider", "", "Filter requests by provider name")
 	rootCmd.AddCommand(logsCmd)
 }
 
@@ -103,21 +110,43 @@ func runLogs(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Recent requests
-	requests, err := database.GetRecentRequests(ctx, logsLimit)
+	// Requests query
+	filter := db.RequestLogFilter{
+		ClientName: logsClient,
+		Model:      logsModel,
+		Provider:   logsProvider,
+		Limit:      logsLimit,
+	}
+	requests, err := database.QueryRequests(ctx, filter)
 	if err != nil {
-		return fmt.Errorf("failed to fetch recent requests: %w", err)
+		return fmt.Errorf("failed to fetch requests: %w", err)
 	}
 
 	fmt.Println(headerStyle.Render("📋 RECENT GATEWAY REQUESTS"))
+	var filterNotes []string
+	if logsClient != "" {
+		filterNotes = append(filterNotes, fmt.Sprintf("client=%s", logsClient))
+	}
+	if logsModel != "" {
+		filterNotes = append(filterNotes, fmt.Sprintf("model=%s", logsModel))
+	}
+	if logsProvider != "" {
+		filterNotes = append(filterNotes, fmt.Sprintf("provider=%s", logsProvider))
+	}
+	if len(filterNotes) > 0 {
+		fmt.Printf("Filter applied: %s\n", strings.Join(filterNotes, ", "))
+	}
+	fmt.Println()
+
 	if len(requests) == 0 {
-		fmt.Println(subStyle.Render("No requests found in database."))
+		fmt.Println(subStyle.Render("No matching requests found in database."))
 		fmt.Println()
 		return nil
 	}
 
-	fmt.Printf("%-18s %-14s %-16s %-12s %-8s %-10s %-10s %-14s %s\n",
+	fmt.Printf("%-18s %-12s %-14s %-16s %-12s %-8s %-10s %-10s %-14s %s\n",
 		thStyle.Render("TIME"),
+		thStyle.Render("CLIENT"),
 		thStyle.Render("MODEL REQ"),
 		thStyle.Render("ROUTED TO"),
 		thStyle.Render("PROVIDER"),
@@ -134,6 +163,13 @@ func runLogs(cmd *cobra.Command, args []string) error {
 			statusStr = errorStyle.Render(fmt.Sprintf("%d", r.StatusCode))
 		}
 
+		clientDisplay := r.ClientName
+		if clientDisplay == "" {
+			clientDisplay = "-"
+		} else if len(clientDisplay) > 11 {
+			clientDisplay = clientDisplay[:9] + ".."
+		}
+
 		typeStr := "[JSON]"
 		if r.Stream {
 			typeStr = "[SSE]"
@@ -146,8 +182,9 @@ func runLogs(cmd *cobra.Command, args []string) error {
 
 		costStr := fmt.Sprintf("$%.5f", r.EstimatedCost)
 
-		fmt.Printf("%-18s %-14s %-16s %-12s %-8s %-10s %-10s %-14s %s\n",
+		fmt.Printf("%-18s %-12s %-14s %-16s %-12s %-8s %-10s %-10s %-14s %s\n",
 			subStyle.Render(r.CreatedAt.Format("15:04:05")),
+			clientDisplay,
 			r.ModelRequested,
 			r.ModelRouted,
 			r.Provider,
