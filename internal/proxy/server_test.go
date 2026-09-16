@@ -1921,6 +1921,54 @@ func TestServer_IPFilterMiddleware(t *testing.T) {
 	}
 }
 
+func TestServer_HeaderModelOverride(t *testing.T) {
+	var receivedModel string
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var chatReq map[string]any
+		_ = json.Unmarshal(body, &chatReq)
+		if m, ok := chatReq["model"].(string); ok {
+			receivedModel = m
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id":"cmpl-override","choices":[{"message":{"content":"model override response"}}]}`)
+	})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	// 1. Send request with payload model "gpt-3.5-turbo" but header X-Phosphor-Model "gpt-4o"
+	payload := `{"model":"gpt-3.5-turbo","messages":[{"role":"user","content":"hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	req.Header.Set("X-Phosphor-Model", "gpt-4o")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if receivedModel != "gpt-4o" {
+		t.Errorf("expected upstream to receive overridden model 'gpt-4o', got %q", receivedModel)
+	}
+	if rr.Header().Get("X-Phosphor-Model") != "gpt-4o" {
+		t.Errorf("expected X-Phosphor-Model response header 'gpt-4o', got %q", rr.Header().Get("X-Phosphor-Model"))
+	}
+
+	// 2. Test X-Routing-Model fallback header
+	receivedModel = ""
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	req2.Header.Set("X-Routing-Model", "gpt-4o")
+	rr2 := httptest.NewRecorder()
+	srv.ServeHTTP(rr2, req2)
+
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rr2.Code, rr2.Body.String())
+	}
+	if receivedModel != "gpt-4o" {
+		t.Errorf("expected upstream to receive overridden model 'gpt-4o' via X-Routing-Model, got %q", receivedModel)
+	}
+}
+
+
 
 
 

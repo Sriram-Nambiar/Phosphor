@@ -877,7 +877,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	requestedModel := chatReq.Model
+	if headerModel := strings.TrimSpace(r.Header.Get("X-Phosphor-Model")); headerModel != "" {
+		requestedModel = headerModel
+		chatReq.Model = headerModel
+	} else if headerModel := strings.TrimSpace(r.Header.Get("X-Routing-Model")); headerModel != "" {
+		requestedModel = headerModel
+		chatReq.Model = headerModel
+	}
+
 	canonicalModel := s.cfg.ResolveModelAlias(requestedModel)
+	w.Header().Set("X-Phosphor-Model", canonicalModel)
 
 	if client, ok := auth.GetClientInfo(r.Context()); ok {
 		if !client.CanAccessModel(requestedModel) && !client.CanAccessModel(canonicalModel) {
