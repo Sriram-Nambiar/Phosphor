@@ -132,6 +132,15 @@ CREATE TABLE IF NOT EXISTS provider_metrics (
     last_updated TEXT NOT NULL,
     PRIMARY KEY (provider, model)
 );
+
+CREATE TABLE IF NOT EXISTS response_cache (
+    key TEXT PRIMARY KEY,
+    value BLOB NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_response_cache_expires ON response_cache(expires_at);
 `
 
 // New initializes a new SQLite connection using modernc.org/sqlite.
@@ -775,3 +784,83 @@ LIMIT ?;`
 
 	return traces, rows.Err()
 }
+
+// GetCachedResponse retrieves a cached response by key. If the entry is expired, it is deleted and returns false.
+func (d *DB) GetCachedResponse(ctx context.Context, key string) ([]byte, bool, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	query := `SELECT value, expires_at FROM response_cache WHERE key = ? LIMIT 1;`
+	row := d.db.QueryRowContext(ctx, query, key)
+
+	var value []byte
+	var expiresAtStr string
+	if err := row.Scan(&value, &expiresAtStr); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("failed to query response cache: %w", err)
+	}
+
+	expiresAt, err := time.Parse(time.RFC3339Nano, expiresAtStr)
+	if err == nil && !expiresAt.IsZero() && time.Now().UTC().After(expiresAt) {
+		// Asynchronously delete expired entry
+		go func(expiredKey string) {
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			_, _ = d.db.Exec("DELETE FROM response_cache WHERE key = ?", expiredKey)
+		}(key)
+		return nil, false, nil
+	}
+
+	return value, true, nil
+}
+
+// SetCachedResponse stores or updates a response cache entry with TTL expiration.
+func (d *DB) SetCachedResponse(ctx context.Context, key string, value []byte, ttl time.Duration) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	now := time.Now().UTC()
+	var expiresAt time.Time
+	if ttl > 0 {
+		expiresAt = now.Add(ttl)
+	}
+
+	query := `
+INSERT INTO response_cache (key, value, expires_at, created_at)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(key) DO UPDATE SET
+    value = excluded.value,
+    expires_at = excluded.expires_at,
+    created_at = excluded.created_at;`
+
+	_, err := d.db.ExecContext(ctx, query, key, value, expiresAt.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	if err != nil {
+		return fmt.Errorf("failed to set cached response: %w", err)
+	}
+	return nil
+}
+
+// DeleteCachedResponse deletes a cached response by key.
+func (d *DB) DeleteCachedResponse(ctx context.Context, key string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	_, err := d.db.ExecContext(ctx, "DELETE FROM response_cache WHERE key = ?", key)
+	return err
+}
+
+// PruneExpiredCache deletes all expired cache entries and returns the count of deleted rows.
+func (d *DB) PruneExpiredCache(ctx context.Context) (int64, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	nowStr := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := d.db.ExecContext(ctx, "DELETE FROM response_cache WHERE expires_at != '' AND expires_at < ?", nowStr)
+	if err != nil {
+		return 0, fmt.Errorf("failed to prune expired cache: %w", err)
+	}
+	return res.RowsAffected()
+}
+

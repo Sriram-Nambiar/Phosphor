@@ -2,9 +2,17 @@ package cache
 
 import (
 	"container/list"
+	"context"
 	"sync"
 	"time"
 )
+
+// PersistentStore represents an optional secondary persistent storage layer (e.g. SQLite).
+type PersistentStore interface {
+	GetCachedResponse(ctx context.Context, key string) ([]byte, bool, error)
+	SetCachedResponse(ctx context.Context, key string, value []byte, ttl time.Duration) error
+	DeleteCachedResponse(ctx context.Context, key string) error
+}
 
 // CacheItem represents a stored item in the LRU cache with an expiration time.
 type CacheItem struct {
@@ -22,15 +30,16 @@ func (i *CacheItem) IsExpired(now time.Time) bool {
 	return now.After(i.ExpiresAt)
 }
 
-// LRUCache is a thread-safe in-memory LRU cache with per-item TTL expiration.
+// LRUCache is a thread-safe in-memory LRU cache with per-item TTL expiration and optional L2 persistence.
 type LRUCache struct {
-	mu         sync.RWMutex
-	capacity   int
-	defaultTTL time.Duration
-	items      map[string]*CacheItem
-	evictList  *list.List
-	hits       int64
-	misses     int64
+	mu              sync.RWMutex
+	capacity        int
+	defaultTTL      time.Duration
+	items           map[string]*CacheItem
+	evictList       *list.List
+	hits            int64
+	misses          int64
+	persistentStore PersistentStore
 }
 
 // NewLRUCache creates a new thread-safe LRU cache with maximum capacity and default TTL.
@@ -46,13 +55,30 @@ func NewLRUCache(capacity int, defaultTTL time.Duration) *LRUCache {
 	}
 }
 
-// Get retrieves an item by key. If the item is expired, it is purged and returns nil, false.
+// SetPersistentStore configures an optional secondary persistent storage backend.
+func (c *LRUCache) SetPersistentStore(store PersistentStore) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.persistentStore = store
+}
+
+// Get retrieves an item by key. If the item is expired, it is purged.
+// If missing from in-memory cache, the optional persistentStore is queried as L2.
 func (c *LRUCache) Get(key string) ([]byte, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	item, exists := c.items[key]
 	if !exists {
+		if c.persistentStore != nil {
+			if val, found, err := c.persistentStore.GetCachedResponse(context.Background(), key); err == nil && found {
+				c.setMemoryItem(key, val, c.defaultTTL)
+				c.hits++
+				copied := make([]byte, len(val))
+				copy(copied, val)
+				return copied, true
+			}
+		}
 		c.misses++
 		return nil, false
 	}
@@ -73,6 +99,7 @@ func (c *LRUCache) Get(key string) ([]byte, bool) {
 }
 
 // Set stores an item with default TTL. If ttl <= 0, defaultTTL is used.
+// It writes to in-memory L1 cache and persists to L2 if persistentStore is configured.
 func (c *LRUCache) Set(key string, value []byte, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -81,18 +108,28 @@ func (c *LRUCache) Set(key string, value []byte, ttl time.Duration) {
 		ttl = c.defaultTTL
 	}
 
+	// Defensive copy
+	copied := make([]byte, len(value))
+	copy(copied, value)
+
+	c.setMemoryItem(key, copied, ttl)
+
+	if c.persistentStore != nil {
+		go func(k string, v []byte, t time.Duration) {
+			_ = c.persistentStore.SetCachedResponse(context.Background(), k, v, t)
+		}(key, copied, ttl)
+	}
+}
+
+func (c *LRUCache) setMemoryItem(key string, value []byte, ttl time.Duration) {
 	now := time.Now()
 	var expiresAt time.Time
 	if ttl > 0 {
 		expiresAt = now.Add(ttl)
 	}
 
-	// Defensive copy
-	copied := make([]byte, len(value))
-	copy(copied, value)
-
 	if item, exists := c.items[key]; exists {
-		item.Value = copied
+		item.Value = value
 		item.ExpiresAt = expiresAt
 		c.evictList.MoveToFront(item.element)
 		return
@@ -105,7 +142,7 @@ func (c *LRUCache) Set(key string, value []byte, ttl time.Duration) {
 
 	item := &CacheItem{
 		Key:       key,
-		Value:     copied,
+		Value:     value,
 		ExpiresAt: expiresAt,
 	}
 	element := c.evictList.PushFront(item)
@@ -113,10 +150,16 @@ func (c *LRUCache) Set(key string, value []byte, ttl time.Duration) {
 	c.items[key] = item
 }
 
-// Delete removes an item by key.
+// Delete removes an item by key from both L1 and L2.
 func (c *LRUCache) Delete(key string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.persistentStore != nil {
+		go func(k string) {
+			_ = c.persistentStore.DeleteCachedResponse(context.Background(), k)
+		}(key)
+	}
 
 	if item, exists := c.items[key]; exists {
 		c.removeElement(item.element)

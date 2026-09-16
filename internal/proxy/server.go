@@ -78,6 +78,9 @@ func NewServer(cfg *config.Config, r *router.Router, database *db.DB) *Server {
 	var c *cache.LRUCache
 	if cfg.Cache.Enabled {
 		c = cache.NewLRUCache(cfg.Cache.Capacity, cfg.Cache.TTL)
+		if database != nil {
+			c.SetPersistentStore(database)
+		}
 	}
 
 	s := &Server{

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestDB_Initialization(t *testing.T) {
@@ -370,4 +371,70 @@ func TestDB_BackpressureDropMetrics(t *testing.T) {
 	// Verify DroppedLogsCount can be read
 	_ = d.DroppedLogsCount()
 }
+
+func TestDB_ResponseCache(t *testing.T) {
+	d, err := New(":memory:")
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer d.Close()
+
+	ctx := context.Background()
+
+	// 1. Get nonexistent key
+	val, found, err := d.GetCachedResponse(ctx, "nonexistent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if found || val != nil {
+		t.Errorf("expected found=false for nonexistent key")
+	}
+
+	// 2. Set with TTL
+	payload := []byte(`{"id":"chatcmpl-cached","choices":[{"message":{"content":"cached response"}}]}`)
+	if err := d.SetCachedResponse(ctx, "prompt-key-1", payload, 1*time.Hour); err != nil {
+		t.Fatalf("failed to set cached response: %v", err)
+	}
+
+	// 3. Get existing key
+	val, found, err = d.GetCachedResponse(ctx, "prompt-key-1")
+	if err != nil {
+		t.Fatalf("failed to get cached response: %v", err)
+	}
+	if !found || string(val) != string(payload) {
+		t.Errorf("expected to find payload, found=%v, val=%s", found, string(val))
+	}
+
+	// 4. Expiration check
+	shortPayload := []byte(`{"content":"short-lived"}`)
+	if err := d.SetCachedResponse(ctx, "short-key", shortPayload, 20*time.Millisecond); err != nil {
+		t.Fatalf("failed to set short-lived cache: %v", err)
+	}
+	time.Sleep(30 * time.Millisecond)
+
+	val, found, err = d.GetCachedResponse(ctx, "short-key")
+	if err != nil {
+		t.Fatalf("unexpected error on expired get: %v", err)
+	}
+	if found {
+		t.Errorf("expected short-key to be expired and not found")
+	}
+
+	// 5. Prune expired cache
+	pruned, err := d.PruneExpiredCache(ctx)
+	if err != nil {
+		t.Fatalf("failed to prune expired cache: %v", err)
+	}
+	_ = pruned
+
+	// 6. Delete key
+	if err := d.DeleteCachedResponse(ctx, "prompt-key-1"); err != nil {
+		t.Fatalf("failed to delete key: %v", err)
+	}
+	val, found, _ = d.GetCachedResponse(ctx, "prompt-key-1")
+	if found {
+		t.Errorf("expected key to be deleted")
+	}
+}
+
 
