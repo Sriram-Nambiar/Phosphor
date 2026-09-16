@@ -164,3 +164,8 @@ func (s *Server) handleOpenAPI(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(openAPISpec))
 }
+
+// OpenAPISpec returns the raw OpenAPI 3.1.0 specification JSON string.
+func OpenAPISpec() string {
+	return openAPISpec
+}
