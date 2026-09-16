@@ -600,11 +600,28 @@ func resolveEnvVars(cfg *Config) {
 	}
 }
 
-func expandEnv(s string) string {
+// ExpandEnv expands environment variables with support for default values,
+// e.g. ${PORT:-8080} and ${HOST:-127.0.0.1}.
+func ExpandEnv(s string) string {
 	if s == "" {
 		return ""
 	}
-	return os.ExpandEnv(s)
+	return os.Expand(s, func(v string) string {
+		if idx := strings.Index(v, ":-"); idx != -1 {
+			name := v[:idx]
+			defaultVal := v[idx+2:]
+			val, exists := os.LookupEnv(name)
+			if exists && val != "" {
+				return val
+			}
+			return defaultVal
+		}
+		return os.Getenv(v)
+	})
+}
+
+func expandEnv(s string) string {
+	return ExpandEnv(s)
 }
 
 // ResolveModelAlias resolves a model alias to its target canonical model name.

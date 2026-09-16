@@ -236,3 +236,40 @@ func TestConfig_ValidateModelAliases(t *testing.T) {
 		t.Errorf("expected at least 3 errors, got %d: %v", len(valErr.Errors), valErr.Errors)
 	}
 }
+
+func TestConfig_ExpandEnvWithDefaults(t *testing.T) {
+	t.Setenv("PHOSPHOR_EXISTING", "my-secret-key")
+
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{
+			input:    "${PHOSPHOR_EXISTING:-default-key}",
+			expected: "my-secret-key",
+		},
+		{
+			input:    "${PHOSPHOR_NON_EXISTENT:-fallback-port}",
+			expected: "fallback-port",
+		},
+		{
+			input:    "http://${PHOSPHOR_NON_EXISTENT:-127.0.0.1}:${PHOSPHOR_NON_EXISTENT_PORT:-8080}/v1",
+			expected: "http://127.0.0.1:8080/v1",
+		},
+		{
+			input:    "${PHOSPHOR_EXISTING}",
+			expected: "my-secret-key",
+		},
+		{
+			input:    "",
+			expected: "",
+		},
+	}
+
+	for _, tc := range tests {
+		result := ExpandEnv(tc.input)
+		if result != tc.expected {
+			t.Errorf("ExpandEnv(%q) = %q, expected %q", tc.input, result, tc.expected)
+		}
+	}
+}
