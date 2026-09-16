@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -116,7 +118,7 @@ func NewServer(cfg *config.Config, r *router.Router, database *db.DB) *Server {
 	}
 
 	s.routes()
-	s.handler = s.requestIDMiddleware(s.corsMiddleware(s.ipFilterMiddleware(s.authMiddleware(s.rateLimitMiddleware(s.mux)))))
+	s.handler = s.requestIDMiddleware(s.corsMiddleware(s.gzipMiddleware(s.ipFilterMiddleware(s.authMiddleware(s.rateLimitMiddleware(s.mux))))))
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	s.server = &http.Server{
@@ -210,6 +212,87 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+var gzipWriterPool = sync.Pool{
+	New: func() any {
+		w, _ := gzip.NewWriterLevel(io.Discard, gzip.DefaultCompression)
+		return w
+	},
+}
+
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	writer      *gzip.Writer
+	wroteHeader bool
+	bypass      bool
+}
+
+func (g *gzipResponseWriter) WriteHeader(code int) {
+	if g.wroteHeader {
+		return
+	}
+	g.wroteHeader = true
+
+	ct := g.Header().Get("Content-Type")
+	if strings.Contains(ct, "text/event-stream") || g.Header().Get("Content-Encoding") != "" || code == http.StatusNotModified || code == http.StatusNoContent {
+		g.bypass = true
+		g.ResponseWriter.WriteHeader(code)
+		return
+	}
+
+	g.Header().Set("Content-Encoding", "gzip")
+	g.Header().Add("Vary", "Accept-Encoding")
+	g.Header().Del("Content-Length")
+	g.ResponseWriter.WriteHeader(code)
+}
+
+func (g *gzipResponseWriter) Write(b []byte) (int, error) {
+	if !g.wroteHeader {
+		g.WriteHeader(http.StatusOK)
+	}
+	if g.bypass || g.writer == nil {
+		return g.ResponseWriter.Write(b)
+	}
+	return g.writer.Write(b)
+}
+
+func (g *gzipResponseWriter) Flush() {
+	if g.writer != nil && !g.bypass {
+		_ = g.writer.Flush()
+	}
+	if flusher, ok := g.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (s *Server) gzipMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") || strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		gz := gzipWriterPool.Get().(*gzip.Writer)
+		gz.Reset(w)
+		defer func() {
+			gz.Reset(io.Discard)
+			gzipWriterPool.Put(gz)
+		}()
+
+		gzw := &gzipResponseWriter{
+			ResponseWriter: w,
+			writer:         gz,
+		}
+		defer func() {
+			if !gzw.bypass && gzw.wroteHeader {
+				_ = gz.Close()
+			}
+		}()
+
+		next.ServeHTTP(gzw, r)
+	})
+}
+
 
 // matchOriginPattern evaluates whether an incoming Origin matches an allowed origin pattern.
 // Supports exact matches ("https://app.example.com"), subdomains ("https://*.example.com"),

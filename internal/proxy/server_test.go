@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -2155,6 +2156,57 @@ func TestServer_NegativeMaxTokensRejected(t *testing.T) {
 		t.Errorf("expected invalid_max_tokens error code, got %s", rr.Body.String())
 	}
 }
+
+func TestServer_GzipCompression(t *testing.T) {
+	srv, _, _ := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id":"cmpl-gzip","choices":[{"message":{"role":"assistant","content":"gzip compressed reply content"}}]}`)
+	})
+
+	payload := `{"model":"gpt-4o","messages":[{"role":"user","content":"hello gzip"}]}`
+
+	// 1. Client sends Accept-Encoding: gzip -> Response is gzipped
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	req1.Header.Set("Accept-Encoding", "gzip, deflate")
+	rr1 := httptest.NewRecorder()
+	srv.ServeHTTP(rr1, req1)
+
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", rr1.Code)
+	}
+	if rr1.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatalf("expected Content-Encoding gzip, got %q", rr1.Header().Get("Content-Encoding"))
+	}
+
+	gzReader, err := gzip.NewReader(rr1.Body)
+	if err != nil {
+		t.Fatalf("failed to open gzip reader: %v", err)
+	}
+	decompressed, err := io.ReadAll(gzReader)
+	_ = gzReader.Close()
+	if err != nil {
+		t.Fatalf("failed to read decompressed body: %v", err)
+	}
+	if !strings.Contains(string(decompressed), "gzip compressed reply content") {
+		t.Errorf("decompressed content mismatch: %s", string(decompressed))
+	}
+
+	// 2. Client does NOT send Accept-Encoding: gzip -> Plain JSON response
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	rr2 := httptest.NewRecorder()
+	srv.ServeHTTP(rr2, req2)
+
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", rr2.Code)
+	}
+	if rr2.Header().Get("Content-Encoding") != "" {
+		t.Errorf("expected no Content-Encoding header, got %s", rr2.Header().Get("Content-Encoding"))
+	}
+	if !strings.Contains(rr2.Body.String(), "gzip compressed reply content") {
+		t.Errorf("expected uncompressed JSON body, got %s", rr2.Body.String())
+	}
+}
+
 
 
 
