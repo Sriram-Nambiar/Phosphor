@@ -1048,6 +1048,12 @@ func (s *Server) handleNonStreamingCompletions(w http.ResponseWriter, r *http.Re
 		correlationID = strings.TrimSpace(r.Header.Get("X-Trace-ID"))
 	}
 	sessionID := strings.TrimSpace(r.Header.Get("X-Session-ID"))
+	if sessionID == "" && req.User != "" {
+		sessionID = req.User
+	}
+	if sessionID != "" {
+		ctx = router.ContextWithSessionID(ctx, sessionID)
+	}
 
 	// 1. Check response cache if enabled and not bypassed via Cache-Control: no-cache
 	if s.cache != nil && !bypassCache {
@@ -1198,6 +1204,12 @@ func (s *Server) handleStreamingCompletions(w http.ResponseWriter, r *http.Reque
 		correlationID = strings.TrimSpace(r.Header.Get("X-Trace-ID"))
 	}
 	sessionID := strings.TrimSpace(r.Header.Get("X-Session-ID"))
+	if sessionID == "" && req.User != "" {
+		sessionID = req.User
+	}
+	if sessionID != "" {
+		ctx = router.ContextWithSessionID(ctx, sessionID)
+	}
 
 	var cacheKey string
 	if s.cache != nil && !strings.Contains(strings.ToLower(r.Header.Get("Cache-Control")), "no-cache") {

@@ -12,6 +12,7 @@ type ScoringContext struct {
 	Request         *provider.ChatRequest
 	EstimatedTokens int
 	LatencyTracker  *LatencyTracker
+	SessionID       string
 }
 
 // CandidateScorer defines the interface for ranking candidates based on routing strategies.
@@ -68,6 +69,7 @@ func DefaultScorerRegistry() map[config.RoutingStrategy]CandidateScorer {
 	rr := NewRoundRobinScorer()
 	wrr := NewWeightedRoundRobinScorer()
 	composite := NewCompositeScorer(0.5, 0.5)
+	sticky := NewStickySessionScorer()
 	return map[config.RoutingStrategy]CandidateScorer{
 		config.StrategyPriority:           &PriorityScorer{},
 		config.StrategyLeastCost:          &LeastCostScorer{},
@@ -75,6 +77,8 @@ func DefaultScorerRegistry() map[config.RoutingStrategy]CandidateScorer {
 		config.StrategyRoundRobin:         rr,
 		config.StrategyWeightedRoundRobin: wrr,
 		config.StrategyComposite:          composite,
+		config.StrategyStickySession:      sticky,
+		"sticky_session":                  sticky,
 		"balanced":                        composite,
 		"cost-latency":                    composite,
 		"round_robin":                     rr,

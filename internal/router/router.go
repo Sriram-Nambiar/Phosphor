@@ -353,8 +353,28 @@ func (r *Router) buildCandidatesForTargets(targets []config.TargetModel) []Candi
 	return candidates
 }
 
+type sessionKeyType struct{}
+
+var sessionCtxKey = sessionKeyType{}
+
+// ContextWithSessionID attaches a session ID string to a context for sticky routing.
+func ContextWithSessionID(ctx context.Context, sessionID string) context.Context {
+	return context.WithValue(ctx, sessionCtxKey, sessionID)
+}
+
+// SessionIDFromContext extracts the session ID string from context if present.
+func SessionIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v, ok := ctx.Value(sessionCtxKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
 // filterAndRankCandidates filters candidates by capabilities and ranks them using the strategy scorer with breaker cooldown penalty.
-func (r *Router) filterAndRankCandidates(candidates []CandidateTarget, req *provider.ChatRequest, strategy config.RoutingStrategy) []CandidateTarget {
+func (r *Router) filterAndRankCandidates(candidates []CandidateTarget, req *provider.ChatRequest, strategy config.RoutingStrategy, sessionID string) []CandidateTarget {
 	reqVision := req.RequiresVision()
 	reqTools := req.RequiresTools()
 	reqJSON := req.RequiresJSONMode()
@@ -405,6 +425,7 @@ func (r *Router) filterAndRankCandidates(candidates []CandidateTarget, req *prov
 		Request:         req,
 		EstimatedTokens: estTokens,
 		LatencyTracker:  r.latencyTracker,
+		SessionID:       sessionID,
 	}
 
 	var ranked []CandidateTarget
@@ -422,8 +443,18 @@ func (r *Router) filterAndRankCandidates(candidates []CandidateTarget, req *prov
 
 // ResolveCandidates builds and ranks eligible candidates for a given requested model, including cross-family fallbacks.
 func (r *Router) ResolveCandidates(req *provider.ChatRequest) ([]CandidateTarget, config.RoutingStrategy, error) {
+	return r.ResolveCandidatesWithContext(context.Background(), req)
+}
+
+// ResolveCandidatesWithContext builds and ranks eligible candidates considering context metadata (such as sticky session affinity).
+func (r *Router) ResolveCandidatesWithContext(ctx context.Context, req *provider.ChatRequest) ([]CandidateTarget, config.RoutingStrategy, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+
+	sessionID := SessionIDFromContext(ctx)
+	if sessionID == "" && req != nil {
+		sessionID = req.User
+	}
 
 	model := r.cfg.ResolveModelAlias(req.Model)
 	var targets []config.TargetModel
@@ -468,7 +499,7 @@ func (r *Router) ResolveCandidates(req *provider.ChatRequest) ([]CandidateTarget
 	}
 
 	primaryCandidates := r.buildCandidatesForTargets(targets)
-	rankedPrimary := r.filterAndRankCandidates(primaryCandidates, req, strategy)
+	rankedPrimary := r.filterAndRankCandidates(primaryCandidates, req, strategy, sessionID)
 
 	seen := make(map[string]bool)
 	var finalCandidates []CandidateTarget
@@ -498,7 +529,7 @@ func (r *Router) ResolveCandidates(req *provider.ChatRequest) ([]CandidateTarget
 			}
 		}
 		fbCandidates := r.buildCandidatesForTargets(fbTargets)
-		rankedFB := r.filterAndRankCandidates(fbCandidates, req, strategy)
+		rankedFB := r.filterAndRankCandidates(fbCandidates, req, strategy, sessionID)
 		for _, c := range rankedFB {
 			key := candidateKey(c)
 			if !seen[key] {
@@ -531,7 +562,7 @@ func (r *Router) Execute(ctx context.Context, req *provider.ChatRequest, request
 		r.retryBudget.RecordRequest()
 	}
 
-	candidates, _, err := r.ResolveCandidates(req)
+	candidates, _, err := r.ResolveCandidatesWithContext(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -655,7 +686,7 @@ func (r *Router) ExecuteStream(ctx context.Context, req *provider.ChatRequest, r
 		r.retryBudget.RecordRequest()
 	}
 
-	candidates, _, err := r.ResolveCandidates(req)
+	candidates, _, err := r.ResolveCandidatesWithContext(ctx, req)
 	if err != nil {
 		return nil, err
 	}

@@ -46,6 +46,7 @@ type ChatRequest struct {
 	Functions      interface{}     `json:"functions,omitempty"`
 	FunctionCall   interface{}     `json:"function_call,omitempty"`
 	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
+	User           string          `json:"user,omitempty"`
 }
 
 // RequiresTools returns true if the request specifies tools, functions, or tool choice.

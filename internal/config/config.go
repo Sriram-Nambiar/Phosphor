@@ -21,6 +21,7 @@ const (
 	StrategyRoundRobin         RoutingStrategy = "round-robin"
 	StrategyWeightedRoundRobin RoutingStrategy = "weighted-round-robin"
 	StrategyComposite          RoutingStrategy = "composite"
+	StrategyStickySession      RoutingStrategy = "sticky-session"
 )
 
 type ProviderType string
@@ -555,7 +556,7 @@ func (c *Config) Validate() error {
 
 	for mName, rule := range c.Models {
 		switch rule.Strategy {
-		case StrategyPriority, StrategyLeastCost, StrategyLowestLatency, StrategyRoundRobin, StrategyWeightedRoundRobin, StrategyComposite, "balanced", "cost-latency", "round_robin", "weighted_round_robin", "":
+		case StrategyPriority, StrategyLeastCost, StrategyLowestLatency, StrategyRoundRobin, StrategyWeightedRoundRobin, StrategyComposite, StrategyStickySession, "sticky_session", "balanced", "cost-latency", "round_robin", "weighted_round_robin", "":
 			// Valid strategy
 		default:
 			errs = append(errs, fmt.Sprintf("models['%s'].strategy '%s' is invalid", mName, rule.Strategy))
