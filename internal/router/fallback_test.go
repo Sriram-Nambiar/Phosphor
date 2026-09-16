@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -200,3 +201,67 @@ func TestRouter_TargetTimeoutFailover(t *testing.T) {
 		t.Errorf("unexpected response content: %+v", res.Response)
 	}
 }
+
+func TestRouter_RetryBudgetExhaustion(t *testing.T) {
+	primarySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte(`{"error":{"message":"Bad Gateway"}}`))
+	}))
+	defer primarySrv.Close()
+
+	fallbackSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"chatcmpl-ok","object":"chat.completion","created":123,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"Should not be reached"},"finish_reason":"stop"}]}`))
+	}))
+	defer fallbackSrv.Close()
+
+	cfg := &config.Config{
+		Routing: config.RoutingConfig{
+			DefaultStrategy:  config.StrategyPriority,
+			RetryBudgetRatio: 0.2,
+		},
+		Providers: []config.ProviderConfig{
+			{Name: "p1", Type: config.ProviderTypeOpenAI, BaseURL: primarySrv.URL, Enabled: true},
+			{Name: "p2", Type: config.ProviderTypeOpenAI, BaseURL: fallbackSrv.URL, Enabled: true},
+		},
+		Models: map[string]config.ModelRule{
+			"gpt-4o": {
+				Targets: []config.TargetModel{
+					{Provider: "p1", Model: "gpt-4o"},
+					{Provider: "p2", Model: "gpt-4o"},
+				},
+			},
+		},
+	}
+
+	r, err := NewRouter(cfg, nil)
+	if err != nil {
+		t.Fatalf("failed to create router: %v", err)
+	}
+
+	// Override retry budget with an exhausted budget (minRetries 0, no regular requests)
+	budget := &RetryBudget{
+		ratio:      0.0,
+		minRetries: 0,
+		window:     10 * time.Second,
+		lastWindow: time.Now(),
+	}
+	r.SetRetryBudget(budget)
+
+	req := &provider.ChatRequest{
+		Model: "gpt-4o",
+		Messages: []provider.ChatMessage{
+			{Role: "user", Content: "Hello"},
+		},
+	}
+
+	_, err = r.Execute(context.Background(), req, "req-budget-test")
+	if err == nil {
+		t.Fatal("expected error due to retry budget exhaustion, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "retry budget exhausted") {
+		t.Errorf("expected 'retry budget exhausted' error message, got: %v", err)
+	}
+}
+

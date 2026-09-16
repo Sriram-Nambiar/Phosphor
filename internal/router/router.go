@@ -56,6 +56,7 @@ type Router struct {
 	scorers        map[config.RoutingStrategy]CandidateScorer
 	backoff        *BackoffPolicy
 	healthChecker  *HealthChecker
+	retryBudget    *RetryBudget
 	mu             sync.RWMutex
 }
 
@@ -72,6 +73,10 @@ func NewRouter(cfg *config.Config, database *db.DB) (*Router, error) {
 		latencyTracker: NewLatencyTracker(0.2),
 		scorers:        DefaultScorerRegistry(),
 		backoff:        NewBackoffPolicy(initBackoff, maxBackoff),
+	}
+
+	if cfg.Routing.RetryBudgetRatio > 0 {
+		r.retryBudget = NewRetryBudget(cfg.Routing.RetryBudgetRatio, 5)
 	}
 
 	// Configure custom composite scorer if specific weights are defined
@@ -163,6 +168,20 @@ func (r *Router) SetBackoffPolicy(b *BackoffPolicy) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.backoff = b
+}
+
+// GetRetryBudget returns the router's retry budget tracker.
+func (r *Router) GetRetryBudget() *RetryBudget {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.retryBudget
+}
+
+// SetRetryBudget overrides the router's retry budget tracker.
+func (r *Router) SetRetryBudget(rb *RetryBudget) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.retryBudget = rb
 }
 
 // RegisterScorer registers a candidate scorer for a routing strategy.
@@ -508,6 +527,10 @@ type ExecutionResult struct {
 
 // Execute attempts to complete a non-streaming chat request with automatic failover.
 func (r *Router) Execute(ctx context.Context, req *provider.ChatRequest, requestID string) (*ExecutionResult, error) {
+	if r.retryBudget != nil {
+		r.retryBudget.RecordRequest()
+	}
+
 	candidates, _, err := r.ResolveCandidates(req)
 	if err != nil {
 		return nil, err
@@ -589,6 +612,10 @@ func (r *Router) Execute(ctx context.Context, req *provider.ChatRequest, request
 
 		// If there is another candidate to fail over to and error is retryable
 		if i+1 < len(candidates) && IsRetryable(attemptErr) {
+			if r.retryBudget != nil && !r.retryBudget.CanRetry() {
+				return &ExecutionResult{FailoverTraces: traces}, fmt.Errorf("retry budget exhausted, failing fast: %w", attemptErr)
+			}
+
 			nextCandidate := candidates[i+1]
 			trace := db.FailoverTrace{
 				RequestID:    requestID,
@@ -623,6 +650,10 @@ type StreamResult struct {
 
 // ExecuteStream attempts to establish a streaming connection with automatic failover on initial connection failure.
 func (r *Router) ExecuteStream(ctx context.Context, req *provider.ChatRequest, requestID string) (*StreamResult, error) {
+	if r.retryBudget != nil {
+		r.retryBudget.RecordRequest()
+	}
+
 	candidates, _, err := r.ResolveCandidates(req)
 	if err != nil {
 		return nil, err
@@ -718,6 +749,10 @@ func (r *Router) ExecuteStream(ctx context.Context, req *provider.ChatRequest, r
 		}
 
 		if i+1 < len(candidates) && IsRetryable(attemptErr) {
+			if r.retryBudget != nil && !r.retryBudget.CanRetry() {
+				return nil, fmt.Errorf("retry budget exhausted, failing fast: %w", attemptErr)
+			}
+
 			nextCandidate := candidates[i+1]
 			trace := db.FailoverTrace{
 				RequestID:    requestID,

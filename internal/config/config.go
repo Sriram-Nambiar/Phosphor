@@ -103,6 +103,7 @@ type RoutingConfig struct {
 	MaxRetries       int             `mapstructure:"max_retries" yaml:"max_retries"`
 	InitialBackoffMs int             `mapstructure:"initial_backoff_ms" yaml:"initial_backoff_ms"`
 	MaxBackoffMs     int             `mapstructure:"max_backoff_ms" yaml:"max_backoff_ms"`
+	RetryBudgetRatio float64         `mapstructure:"retry_budget_ratio,omitempty" yaml:"retry_budget_ratio,omitempty"`
 }
 
 type CircuitBreakerConfig struct {
@@ -462,6 +463,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Routing.MaxBackoffMs < 0 {
 		errs = append(errs, "routing.max_backoff_ms cannot be negative")
+	}
+	if c.Routing.RetryBudgetRatio < 0 || c.Routing.RetryBudgetRatio > 1.0 {
+		errs = append(errs, "routing.retry_budget_ratio must be between 0.0 and 1.0")
 	}
 
 	if c.CircuitBreaker.FailureThreshold < 0 {
