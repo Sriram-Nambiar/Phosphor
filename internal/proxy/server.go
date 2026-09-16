@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Sriram-Nambiar/Phosphor/internal/auth"
+	"github.com/Sriram-Nambiar/Phosphor/internal/budget"
 	"github.com/Sriram-Nambiar/Phosphor/internal/cache"
 	"github.com/Sriram-Nambiar/Phosphor/internal/config"
 	"github.com/Sriram-Nambiar/Phosphor/internal/db"
@@ -548,6 +549,22 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			writeOpenAIError(w, http.StatusForbidden, fmt.Sprintf("Your API key does not have permission to access model '%s'", chatReq.Model), "permission_error", "model_access_denied")
 			return
 		}
+
+		// Enforce tenant/client budget if configured
+		if client.Budget != nil && client.Budget.MaxSpend > 0 && s.database != nil {
+			start := budget.WindowStart(client.Budget.ResetPeriod, time.Now())
+			currentSpend, err := s.database.GetClientSpend(r.Context(), client.Name, start)
+			if err == nil {
+				res := budget.Evaluate(client.Budget, currentSpend)
+				if !res.Allowed {
+					writeOpenAIError(w, http.StatusTooManyRequests, budget.FormatBudgetError(res), "insufficient_quota", "budget_exceeded")
+					return
+				}
+				if res.SoftReached {
+					w.Header().Set("X-Budget-Warning", fmt.Sprintf("Approaching budget limit ($%.2f / $%.2f)", res.Current, res.MaxSpend))
+				}
+			}
+		}
 	}
 
 	requestID := GetRequestID(r.Context())
@@ -628,6 +645,10 @@ func (s *Server) handleNonStreamingCompletions(w http.ResponseWriter, r *http.Re
 	cost := router.CalculateCost(promptTokens, compTokens, result.Candidate.Cost)
 
 	if s.database != nil {
+		var clientName string
+		if client, ok := auth.GetClientInfo(r.Context()); ok {
+			clientName = client.Name
+		}
 		logCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = s.database.LogRequest(logCtx, &db.RequestLog{
@@ -644,6 +665,7 @@ func (s *Server) handleNonStreamingCompletions(w http.ResponseWriter, r *http.Re
 			TTFTMs:           0,
 			StatusCode:       http.StatusOK,
 			Stream:           false,
+			ClientName:       clientName,
 		})
 	}
 
@@ -976,6 +998,10 @@ streamLoop:
 
 	// Log completed or failed stream telemetry
 	if s.database != nil {
+		var clientName string
+		if client, ok := auth.GetClientInfo(r.Context()); ok {
+			clientName = client.Name
+		}
 		logCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = s.database.LogRequest(logCtx, &db.RequestLog{
@@ -993,6 +1019,7 @@ streamLoop:
 			StatusCode:       statusCode,
 			Stream:           true,
 			ErrorMsg:         errorMsg,
+			ClientName:       clientName,
 		})
 	}
 }

@@ -1122,6 +1122,95 @@ func TestServer_StreamingResponseCache(t *testing.T) {
 	}
 }
 
+func TestServer_BudgetEnforcement(t *testing.T) {
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id":"cmpl-budget","choices":[{"message":{"role":"assistant","content":"budget ok"}}],"usage":{"prompt_tokens":10,"completion_tokens":10,"total_tokens":20}}`)
+	})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	srv.cfg.Auth = config.AuthConfig{
+		Enabled: true,
+		Keys: []config.APIKeyConfig{
+			{
+				Key:  "tenant-key-1",
+				Name: "tenant-corp",
+				Budget: &config.BudgetConfig{
+					MaxSpend:    0.10,
+					SoftLimit:   0.05,
+					ResetPeriod: "monthly",
+				},
+			},
+		},
+	}
+
+	payload := `{"model":"gpt-4o","messages":[{"role":"user","content":"budget check"}]}`
+
+	// 1. Initial request with 0 spend -> Allowed
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	req1.Header.Set("Authorization", "Bearer tenant-key-1")
+	rr1 := httptest.NewRecorder()
+	srv.ServeHTTP(rr1, req1)
+
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for initial request, got %d: %s", rr1.Code, rr1.Body.String())
+	}
+	if rr1.Header().Get("X-Budget-Warning") != "" {
+		t.Errorf("expected no budget warning initially, got %s", rr1.Header().Get("X-Budget-Warning"))
+	}
+
+	// 2. Add spend to DB to trigger soft limit ($0.06 > $0.05)
+	_ = dbInstance.LogRequestSync(context.Background(), &db.RequestLog{
+		ModelRequested: "gpt-4o",
+		Provider:       "mock-p",
+		ModelRouted:    "gpt-4o",
+		EstimatedCost:  0.06,
+		StatusCode:     200,
+		ClientName:     "tenant-corp",
+		CreatedAt:      time.Now().UTC(),
+	})
+
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	req2.Header.Set("Authorization", "Bearer tenant-key-1")
+	rr2 := httptest.NewRecorder()
+	srv.ServeHTTP(rr2, req2)
+
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on soft limit, got %d: %s", rr2.Code, rr2.Body.String())
+	}
+	if rr2.Header().Get("X-Budget-Warning") == "" {
+		t.Errorf("expected X-Budget-Warning header when soft limit reached")
+	}
+
+	// 3. Add spend to DB to trigger hard limit ($0.12 > $0.10)
+	_ = dbInstance.LogRequestSync(context.Background(), &db.RequestLog{
+		ModelRequested: "gpt-4o",
+		Provider:       "mock-p",
+		ModelRouted:    "gpt-4o",
+		EstimatedCost:  0.06,
+		StatusCode:     200,
+		ClientName:     "tenant-corp",
+		CreatedAt:      time.Now().UTC(),
+	})
+
+	req3 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	req3.Header.Set("Authorization", "Bearer tenant-key-1")
+	rr3 := httptest.NewRecorder()
+	srv.ServeHTTP(rr3, req3)
+
+	if rr3.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429 Too Many Requests when hard budget exceeded, got %d: %s", rr3.Code, rr3.Body.String())
+	}
+	var errResp ErrorResponse
+	if err := json.Unmarshal(rr3.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("failed to decode error: %v", err)
+	}
+	if errResp.Error.Code != "budget_exceeded" {
+		t.Errorf("expected error code budget_exceeded, got %s", errResp.Error.Code)
+	}
+}
+
 
 
 
