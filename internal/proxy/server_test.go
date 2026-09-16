@@ -1642,6 +1642,62 @@ func TestServer_ChatCompletions_FallbackUsageEstimation(t *testing.T) {
 	}
 }
 
+func TestServer_CORSPatterns(t *testing.T) {
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	srv.cfg.Server.CORS = config.CORSConfig{
+		Enabled: true,
+		AllowedOrigins: []string{
+			"https://*.example.com",
+			"http://localhost:*",
+			"https://app.custom.org",
+		},
+		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+		AllowedHeaders:   []string{"Authorization", "Content-Type"},
+		AllowCredentials: true,
+		MaxAgeSeconds:    7200,
+	}
+
+	tests := []struct {
+		origin      string
+		expectAllow bool
+	}{
+		{"https://sub.example.com", true},
+		{"https://deep.nested.example.com", true},
+		{"https://example.com", false},
+		{"http://localhost:3000", true},
+		{"http://localhost:8080", true},
+		{"https://app.custom.org", true},
+		{"https://evil-attacker.com", false},
+	}
+
+	for _, tc := range tests {
+		req := httptest.NewRequest(http.MethodOptions, "/health", nil)
+		req.Header.Set("Origin", tc.origin)
+		rr := httptest.NewRecorder()
+		srv.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusNoContent {
+			t.Errorf("expected 204 No Content for OPTIONS, got %d", rr.Code)
+		}
+
+		allowedHeader := rr.Header().Get("Access-Control-Allow-Origin")
+		if tc.expectAllow {
+			if allowedHeader != tc.origin {
+				t.Errorf("origin %q: expected Access-Control-Allow-Origin=%q, got %q", tc.origin, tc.origin, allowedHeader)
+			}
+		} else {
+			if allowedHeader != "" {
+				t.Errorf("origin %q: expected no Access-Control-Allow-Origin, got %q", tc.origin, allowedHeader)
+			}
+		}
+	}
+}
+
 
 
 

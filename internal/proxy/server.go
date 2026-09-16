@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -157,7 +158,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 				allowedOrigin = "*"
 				break
 			}
-			if origin != "" && strings.EqualFold(o, origin) {
+			if origin != "" && matchOriginPattern(o, origin) {
 				allowedOrigin = origin
 				break
 			}
@@ -196,6 +197,38 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// matchOriginPattern evaluates whether an incoming Origin matches an allowed origin pattern.
+// Supports exact matches ("https://app.example.com"), subdomains ("https://*.example.com"),
+// and wildcard ports ("http://localhost:*").
+func matchOriginPattern(pattern, origin string) bool {
+	if pattern == "*" {
+		return true
+	}
+	if origin == "" {
+		return false
+	}
+	pattern = strings.ToLower(pattern)
+	origin = strings.ToLower(origin)
+	if pattern == origin {
+		return true
+	}
+
+	if !strings.Contains(pattern, "*") {
+		return false
+	}
+
+	parts := strings.Split(pattern, "*")
+	if len(parts) == 2 {
+		prefix, suffix := parts[0], parts[1]
+		return strings.HasPrefix(origin, prefix) && strings.HasSuffix(origin, suffix) && len(origin) >= len(prefix)+len(suffix)
+	}
+
+	escaped := regexp.QuoteMeta(pattern)
+	regexPattern := "^" + strings.ReplaceAll(escaped, `\*`, `.*`) + "$"
+	matched, _ := regexp.MatchString(regexPattern, origin)
+	return matched
 }
 
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
