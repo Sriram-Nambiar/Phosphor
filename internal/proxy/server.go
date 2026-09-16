@@ -129,6 +129,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/v1/admin/cache/stats", s.handleAdminCacheStats)
 	s.mux.HandleFunc("/v1/admin/cache/clear", s.handleAdminCacheClear)
 	s.mux.HandleFunc("/v1/admin/db/vacuum", s.handleAdminDBVacuum)
+	s.mux.HandleFunc("/openapi.json", s.handleOpenAPI)
 }
 
 func (s *Server) requestIDMiddleware(next http.Handler) http.Handler {
@@ -234,7 +235,7 @@ func matchOriginPattern(pattern, origin string) bool {
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Public endpoints that don't require authentication
-		if r.URL.Path == "/health" || r.URL.Path == "/ready" || r.URL.Path == "/metrics" {
+		if r.URL.Path == "/health" || r.URL.Path == "/ready" || r.URL.Path == "/metrics" || r.URL.Path == "/openapi.json" {
 			next.ServeHTTP(w, r)
 			return
 		}

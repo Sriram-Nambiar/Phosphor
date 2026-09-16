@@ -1742,6 +1742,56 @@ func TestServer_CorrelationAndSessionHeaders(t *testing.T) {
 	}
 }
 
+func TestServer_OpenAPIEndpoint(t *testing.T) {
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	// 1. Valid GET /openapi.json
+	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for GET /openapi.json, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Header().Get("Content-Type"), "application/json") {
+		t.Errorf("expected Content-Type application/json, got %q", rr.Header().Get("Content-Type"))
+	}
+
+	var schema map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &schema); err != nil {
+		t.Fatalf("failed to decode openapi schema: %v", err)
+	}
+	if schema["openapi"] != "3.1.0" {
+		t.Errorf("expected openapi 3.1.0, got %v", schema["openapi"])
+	}
+
+	paths, ok := schema["paths"].(map[string]any)
+	if !ok {
+		t.Fatal("expected paths object in openapi schema")
+	}
+	if _, ok := paths["/v1/chat/completions"]; !ok {
+		t.Error("expected /v1/chat/completions in openapi paths")
+	}
+	if _, ok := paths["/v1/models"]; !ok {
+		t.Error("expected /v1/models in openapi paths")
+	}
+	if _, ok := paths["/health"]; !ok {
+		t.Error("expected /health in openapi paths")
+	}
+
+	// 2. Invalid method POST /openapi.json
+	reqPost := httptest.NewRequest(http.MethodPost, "/openapi.json", nil)
+	rrPost := httptest.NewRecorder()
+	srv.ServeHTTP(rrPost, reqPost)
+	if rrPost.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 Method Not Allowed for POST /openapi.json, got %d", rrPost.Code)
+	}
+}
+
 
 
 
