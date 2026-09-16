@@ -515,4 +515,60 @@ func TestDB_ClientSpend(t *testing.T) {
 	}
 }
 
+func TestDB_VacuumAndFileSize(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. In-memory database
+	memDB, err := New(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	defer memDB.Close()
+
+	if err := memDB.Vacuum(ctx); err != nil {
+		t.Fatalf("expected memory vacuum to succeed: %v", err)
+	}
+	size, err := memDB.FileSize()
+	if err != nil {
+		t.Fatalf("unexpected error getting memory db file size: %v", err)
+	}
+	if size != 0 {
+		t.Errorf("expected size 0 for memory db, got %d", size)
+	}
+
+	// 2. File-based database
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test_vacuum.db")
+
+	fileDB, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open file db: %v", err)
+	}
+	defer fileDB.Close()
+
+	// Insert some records
+	for i := 0; i < 20; i++ {
+		_ = fileDB.LogRequest(ctx, &RequestLog{
+			ModelRequested: "gpt-4o",
+			Provider:       "openai",
+			ModelRouted:    "gpt-4o",
+			PromptTokens:   50,
+			StatusCode:     200,
+		})
+	}
+	_ = fileDB.Flush(ctx)
+
+	if err := fileDB.Vacuum(ctx); err != nil {
+		t.Fatalf("expected file db vacuum to succeed: %v", err)
+	}
+
+	fileSize, err := fileDB.FileSize()
+	if err != nil {
+		t.Fatalf("expected valid file size: %v", err)
+	}
+	if fileSize <= 0 {
+		t.Errorf("expected positive file size, got %d", fileSize)
+	}
+}
+
 

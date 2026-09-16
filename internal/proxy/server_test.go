@@ -1419,6 +1419,37 @@ func TestServer_AdminCacheEndpoints(t *testing.T) {
 	}
 }
 
+func TestServer_AdminDBVacuum(t *testing.T) {
+	srv, _, _ := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// 1. Valid POST /v1/admin/db/vacuum
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/db/vacuum", nil)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for POST /v1/admin/db/vacuum, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp AdminDBVacuumResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.Status != "ok" {
+		t.Errorf("expected status 'ok', got %q", resp.Status)
+	}
+
+	// 2. Invalid method GET /v1/admin/db/vacuum
+	reqGet := httptest.NewRequest(http.MethodGet, "/v1/admin/db/vacuum", nil)
+	rrGet := httptest.NewRecorder()
+	srv.ServeHTTP(rrGet, reqGet)
+	if rrGet.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 Method Not Allowed for GET /v1/admin/db/vacuum, got %d", rrGet.Code)
+	}
+}
+
 func TestServer_ModelAliasing(t *testing.T) {
 	var receivedModel string
 	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {

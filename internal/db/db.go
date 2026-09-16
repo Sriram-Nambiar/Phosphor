@@ -24,6 +24,7 @@ type asyncItem struct {
 
 type DB struct {
 	db         *sql.DB
+	path       string
 	mu         sync.RWMutex
 	asyncQueue chan *asyncItem
 	wg         sync.WaitGroup
@@ -188,6 +189,7 @@ func New(dbPath string) (*DB, error) {
 
 	d := &DB{
 		db:         sqlDB,
+		path:       dbPath,
 		asyncQueue: make(chan *asyncItem, 4096),
 	}
 	d.startWorker(50, 50*time.Millisecond)
@@ -233,6 +235,52 @@ func (d *DB) Flush(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// Vacuum compacts the SQLite database, reclaims freed pages, and executes PRAGMA optimize.
+func (d *DB) Vacuum(ctx context.Context) error {
+	if d == nil || d.db == nil {
+		return errors.New("database not initialized")
+	}
+
+	// Flush pending writes first to ensure clean state
+	_ = d.Flush(ctx)
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if _, err := d.db.ExecContext(ctx, "VACUUM;"); err != nil {
+		return fmt.Errorf("failed to vacuum database: %w", err)
+	}
+	if _, err := d.db.ExecContext(ctx, "PRAGMA optimize;"); err != nil {
+		return fmt.Errorf("failed to optimize database: %w", err)
+	}
+	return nil
+}
+
+// FileSize returns the size of the database file on disk in bytes.
+// If the database is in-memory (:memory:), it returns 0.
+func (d *DB) FileSize() (int64, error) {
+	if d == nil {
+		return 0, errors.New("database not initialized")
+	}
+	if d.path == "" || d.path == ":memory:" || strings.HasPrefix(d.path, "file::memory:") {
+		return 0, nil
+	}
+
+	cleanPath := d.path
+	if idx := strings.Index(cleanPath, "?"); idx != -1 {
+		cleanPath = cleanPath[:idx]
+	}
+
+	fi, err := os.Stat(cleanPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return fi.Size(), nil
 }
 
 // QueueDepth returns the current number of pending items in the async queue.

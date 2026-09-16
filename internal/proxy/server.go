@@ -127,6 +127,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/v1/admin/budgets", s.handleAdminBudgets)
 	s.mux.HandleFunc("/v1/admin/cache/stats", s.handleAdminCacheStats)
 	s.mux.HandleFunc("/v1/admin/cache/clear", s.handleAdminCacheClear)
+	s.mux.HandleFunc("/v1/admin/db/vacuum", s.handleAdminDBVacuum)
 }
 
 func (s *Server) requestIDMiddleware(next http.Handler) http.Handler {
@@ -695,6 +696,38 @@ func (s *Server) handleAdminCacheClear(w http.ResponseWriter, r *http.Request) {
 		Status:        "ok",
 		ClearedL1:     clearedL1,
 		ClearedL2Rows: clearedL2,
+	})
+}
+
+type AdminDBVacuumResponse struct {
+	Status    string `json:"status"`
+	Message   string `json:"message"`
+	SizeBytes int64  `json:"size_bytes"`
+}
+
+func (s *Server) handleAdminDBVacuum(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "Method not allowed. Only POST is supported.", "invalid_request_error", "method_not_allowed")
+		return
+	}
+
+	if s.database == nil {
+		writeOpenAIError(w, http.StatusServiceUnavailable, "Database is not configured or disabled.", "database_error", "db_unavailable")
+		return
+	}
+
+	if err := s.database.Vacuum(r.Context()); err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to vacuum database: %v", err), "database_error", "vacuum_failed")
+		return
+	}
+
+	size, _ := s.database.FileSize()
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(AdminDBVacuumResponse{
+		Status:    "ok",
+		Message:   "database vacuumed and optimized",
+		SizeBytes: size,
 	})
 }
 
