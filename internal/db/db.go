@@ -23,13 +23,17 @@ type asyncItem struct {
 }
 
 type DB struct {
-	db         *sql.DB
-	path       string
-	mu         sync.RWMutex
-	asyncQueue chan *asyncItem
-	wg         sync.WaitGroup
-	dropCount  atomic.Uint64
-	closed     atomic.Bool
+	db                *sql.DB
+	path              string
+	mu                sync.RWMutex
+	asyncQueue        chan *asyncItem
+	wg                sync.WaitGroup
+	dropCount         atomic.Uint64
+	closed            atomic.Bool
+	writeErrors       atomic.Uint64
+	consecutiveErrors atomic.Uint64
+	lastWriteErr      atomic.Pointer[string]
+	degraded          atomic.Bool
 }
 
 type RequestLog struct {
@@ -308,6 +312,66 @@ func (d *DB) DroppedLogsCount() uint64 {
 	return d.dropCount.Load()
 }
 
+func (d *DB) recordWriteError(err error) {
+	if d == nil || err == nil {
+		return
+	}
+	d.writeErrors.Add(1)
+	consec := d.consecutiveErrors.Add(1)
+	errStr := err.Error()
+	d.lastWriteErr.Store(&errStr)
+	if consec >= 3 {
+		d.degraded.Store(true)
+	}
+}
+
+func (d *DB) recordWriteSuccess() {
+	if d == nil {
+		return
+	}
+	d.consecutiveErrors.Store(0)
+	d.degraded.Store(false)
+}
+
+// IsDegraded returns true if the database is experiencing recurring write errors.
+func (d *DB) IsDegraded() bool {
+	if d == nil {
+		return false
+	}
+	return d.degraded.Load()
+}
+
+// WriteErrorsCount returns the total number of database write errors encountered.
+func (d *DB) WriteErrorsCount() uint64 {
+	if d == nil {
+		return 0
+	}
+	return d.writeErrors.Load()
+}
+
+// LastWriteError returns the most recent database write error message, if any.
+func (d *DB) LastWriteError() string {
+	if d == nil {
+		return ""
+	}
+	p := d.lastWriteErr.Load()
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// SetDegraded explicitly sets or resets the degradation state.
+func (d *DB) SetDegraded(degraded bool) {
+	if d == nil {
+		return
+	}
+	d.degraded.Store(degraded)
+	if !degraded {
+		d.consecutiveErrors.Store(0)
+	}
+}
+
 func (d *DB) startWorker(batchSize int, flushInterval time.Duration) {
 	d.wg.Add(1)
 	go func() {
@@ -366,6 +430,7 @@ func (d *DB) LogBatch(ctx context.Context, reqs []*RequestLog, failovers []*Fail
 
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
+		d.recordWriteError(err)
 		return fmt.Errorf("failed to begin batch transaction: %w", err)
 	}
 	defer tx.Rollback()
@@ -380,6 +445,7 @@ INSERT INTO requests (
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 `)
 		if err != nil {
+			d.recordWriteError(err)
 			return fmt.Errorf("failed to prepare batch requests stmt: %w", err)
 		}
 		defer reqStmt.Close()
@@ -415,6 +481,7 @@ INSERT INTO requests (
 				r.SessionID,
 			)
 			if err != nil {
+				d.recordWriteError(err)
 				return fmt.Errorf("failed to insert batched request log: %w", err)
 			}
 		}
@@ -427,6 +494,7 @@ INSERT INTO failover_traces (
 ) VALUES (?, ?, ?, ?, ?, ?, ?);
 `)
 		if err != nil {
+			d.recordWriteError(err)
 			return fmt.Errorf("failed to prepare batch failover stmt: %w", err)
 		}
 		defer fStmt.Close()
@@ -448,12 +516,18 @@ INSERT INTO failover_traces (
 				f.LatencyMs,
 			)
 			if err != nil {
+				d.recordWriteError(err)
 				return fmt.Errorf("failed to insert batched failover trace: %w", err)
 			}
 		}
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		d.recordWriteError(err)
+		return err
+	}
+	d.recordWriteSuccess()
+	return nil
 }
 
 // EnqueueRequestLog attempts non-blocking enqueue into the async telemetry queue.
@@ -547,8 +621,10 @@ INSERT INTO requests (
 		r.SessionID,
 	)
 	if err != nil {
+		d.recordWriteError(err)
 		return fmt.Errorf("failed to insert request log: %w", err)
 	}
+	d.recordWriteSuccess()
 
 	return nil
 }
@@ -580,8 +656,10 @@ INSERT INTO failover_traces (
 		f.LatencyMs,
 	)
 	if err != nil {
+		d.recordWriteError(err)
 		return fmt.Errorf("failed to insert failover trace: %w", err)
 	}
+	d.recordWriteSuccess()
 
 	return nil
 }

@@ -1792,6 +1792,58 @@ func TestServer_OpenAPIEndpoint(t *testing.T) {
 	}
 }
 
+func TestServer_DegradedDatabaseMode(t *testing.T) {
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id":"cmpl-degraded","choices":[{"message":{"role":"assistant","content":"hello degraded"}}]}`)
+	})
+	defer mockUpstream.Close()
+
+	// Simulate database degraded state
+	dbInstance.SetDegraded(true)
+
+	// 1. Health check should report 200 OK with status "degraded"
+	reqHealth := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rrHealth := httptest.NewRecorder()
+	srv.ServeHTTP(rrHealth, reqHealth)
+
+	if rrHealth.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK in degraded mode, got %d", rrHealth.Code)
+	}
+
+	var healthResp map[string]any
+	if err := json.Unmarshal(rrHealth.Body.Bytes(), &healthResp); err != nil {
+		t.Fatalf("failed to decode health response: %v", err)
+	}
+	if healthResp["status"] != "degraded" {
+		t.Errorf("expected health status 'degraded', got %v", healthResp["status"])
+	}
+
+	// 2. Metrics endpoint should report phosphor_db_degraded 1
+	reqMetrics := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rrMetrics := httptest.NewRecorder()
+	srv.ServeHTTP(rrMetrics, reqMetrics)
+
+	if rrMetrics.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for /metrics, got %d", rrMetrics.Code)
+	}
+	metricsBody := rrMetrics.Body.String()
+	if !strings.Contains(metricsBody, "phosphor_db_degraded 1") {
+		t.Errorf("expected metrics to contain 'phosphor_db_degraded 1', got:\n%s", metricsBody)
+	}
+
+	// 3. LLM proxy requests still succeed smoothly despite DB degradation
+	payload := `{"model":"gpt-4o","messages":[{"role":"user","content":"test chat"}]}`
+	reqChat := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	rrChat := httptest.NewRecorder()
+	srv.ServeHTTP(rrChat, reqChat)
+
+	if rrChat.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for chat request during degraded db mode, got %d: %s", rrChat.Code, rrChat.Body.String())
+	}
+}
+
+
 
 
 

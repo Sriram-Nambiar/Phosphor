@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -613,5 +614,56 @@ func TestDB_CorrelationAndSessionIDs(t *testing.T) {
 		t.Errorf("expected ClientName 'corp-client', got %q", recent[0].ClientName)
 	}
 }
+
+func TestDB_DegradedStateAndErrorTracking(t *testing.T) {
+	d, err := New(":memory:")
+	if err != nil {
+		t.Fatalf("failed to initialize db: %v", err)
+	}
+	defer d.Close()
+
+	if d.IsDegraded() {
+		t.Errorf("expected initially not degraded")
+	}
+	if d.WriteErrorsCount() != 0 {
+		t.Errorf("expected 0 write errors, got %d", d.WriteErrorsCount())
+	}
+
+	// Record consecutive simulated write errors
+	testErr := fmt.Errorf("disk I/O failure")
+	d.recordWriteError(testErr)
+	d.recordWriteError(testErr)
+	if d.IsDegraded() {
+		t.Errorf("expected not degraded after only 2 errors")
+	}
+
+	d.recordWriteError(testErr)
+	if !d.IsDegraded() {
+		t.Errorf("expected degraded after 3 consecutive errors")
+	}
+	if d.WriteErrorsCount() != 3 {
+		t.Errorf("expected 3 write errors, got %d", d.WriteErrorsCount())
+	}
+	if d.LastWriteError() != testErr.Error() {
+		t.Errorf("expected last write error %q, got %q", testErr.Error(), d.LastWriteError())
+	}
+
+	// Success recovers degraded state
+	d.recordWriteSuccess()
+	if d.IsDegraded() {
+		t.Errorf("expected degraded state cleared on success")
+	}
+
+	// Test manual SetDegraded
+	d.SetDegraded(true)
+	if !d.IsDegraded() {
+		t.Errorf("expected degraded to be true after SetDegraded(true)")
+	}
+	d.SetDegraded(false)
+	if d.IsDegraded() {
+		t.Errorf("expected degraded to be false after SetDegraded(false)")
+	}
+}
+
 
 

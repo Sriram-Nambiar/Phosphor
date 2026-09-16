@@ -325,8 +325,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	status := "healthy"
+	if s.database != nil && s.database.IsDegraded() {
+		status = "degraded"
+	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":    "healthy",
+		"status":    status,
 		"service":   "phosphor",
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
@@ -347,6 +351,8 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 		if err := s.database.Ping(ctx); err != nil {
 			dbStatus = "unhealthy: " + err.Error()
 			issues = append(issues, "database ping failed: "+err.Error())
+		} else if s.database.IsDegraded() {
+			dbStatus = fmt.Sprintf("degraded: recurring write failures (%s)", s.database.LastWriteError())
 		}
 	} else {
 		dbStatus = "disabled"
@@ -378,6 +384,8 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	if !isReady {
 		statusCode = http.StatusServiceUnavailable
 		statusText = "not_ready"
+	} else if s.database != nil && s.database.IsDegraded() {
+		statusText = "degraded"
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -408,12 +416,18 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	buf.WriteString("# TYPE phosphor_up gauge\n")
 	buf.WriteString("phosphor_up 1\n\n")
 
-	// 2. Telemetry queue stats
+	// 2. Telemetry queue stats and DB degradation
 	queueDepth := 0
 	var droppedLogs uint64
+	dbDegraded := 0
+	var dbWriteErrors uint64 = 0
 	if s.database != nil {
 		queueDepth = s.database.QueueDepth()
 		droppedLogs = s.database.DroppedLogsCount()
+		if s.database.IsDegraded() {
+			dbDegraded = 1
+		}
+		dbWriteErrors = s.database.WriteErrorsCount()
 	}
 	buf.WriteString("# HELP phosphor_telemetry_queue_depth Current number of items queued in async telemetry queue.\n")
 	buf.WriteString("# TYPE phosphor_telemetry_queue_depth gauge\n")
@@ -422,6 +436,14 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	buf.WriteString("# HELP phosphor_telemetry_dropped_total Total number of dropped telemetry events due to backpressure.\n")
 	buf.WriteString("# TYPE phosphor_telemetry_dropped_total counter\n")
 	fmt.Fprintf(&buf, "phosphor_telemetry_dropped_total %d\n\n", droppedLogs)
+
+	buf.WriteString("# HELP phosphor_db_degraded SQLite database degraded mode indicator (1=degraded, 0=healthy).\n")
+	buf.WriteString("# TYPE phosphor_db_degraded gauge\n")
+	fmt.Fprintf(&buf, "phosphor_db_degraded %d\n\n", dbDegraded)
+
+	buf.WriteString("# HELP phosphor_db_write_errors_total Total number of database write errors encountered.\n")
+	buf.WriteString("# TYPE phosphor_db_write_errors_total counter\n")
+	fmt.Fprintf(&buf, "phosphor_db_write_errors_total %d\n\n", dbWriteErrors)
 
 	// 3. Circuit breaker metrics
 	buf.WriteString("# HELP phosphor_circuit_breaker_state Current state of provider circuit breaker (0=closed, 1=half-open, 2=open).\n")
