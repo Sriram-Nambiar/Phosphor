@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -806,6 +807,120 @@ func TestDB_QueryRequestsFilter(t *testing.T) {
 		t.Fatalf("expected 1 record with limit=1, got %d", len(resLimit))
 	}
 }
+
+func TestDB_Backup(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	// 1. Nil DB check
+	var nilDB *DB
+	if err := nilDB.Backup(ctx, filepath.Join(tmpDir, "nil.db")); err == nil {
+		t.Errorf("expected error backing up nil DB, got nil")
+	}
+
+	// 2. File-based DB backup
+	srcPath := filepath.Join(tmpDir, "source.db")
+	dbSrc, err := New(srcPath)
+	if err != nil {
+		t.Fatalf("failed to open source db: %v", err)
+	}
+	defer dbSrc.Close()
+
+	// Empty path validation
+	if err := dbSrc.Backup(ctx, ""); err == nil {
+		t.Errorf("expected error for empty dest path, got nil")
+	}
+
+	// Insert data into source DB
+	testLog := &RequestLog{
+		ID:             "backup-test-1",
+		CreatedAt:      time.Now().UTC(),
+		ModelRequested: "gpt-4o",
+		Provider:       "openai",
+		ModelRouted:    "gpt-4o",
+		PromptTokens:   40,
+		CompletionTokens: 60,
+		TotalTokens:    100,
+		StatusCode:     200,
+	}
+	if err := dbSrc.LogRequest(ctx, testLog); err != nil {
+		t.Fatalf("failed to insert log: %v", err)
+	}
+	_ = dbSrc.Flush(ctx)
+
+	// Backup to nested directory
+	backupDest := filepath.Join(tmpDir, "nested", "backup.db")
+	if err := dbSrc.Backup(ctx, backupDest); err != nil {
+		t.Fatalf("backup failed: %v", err)
+	}
+
+	// Verify backup file exists
+	fi, err := os.Stat(backupDest)
+	if err != nil {
+		t.Fatalf("backup file does not exist: %v", err)
+	}
+	if fi.Size() == 0 {
+		t.Fatalf("backup file is empty")
+	}
+
+	// Open backup database and verify contents
+	backupDB, err := New(backupDest)
+	if err != nil {
+		t.Fatalf("failed to open backup db: %v", err)
+	}
+	logs, err := backupDB.QueryRequests(ctx, RequestLogFilter{})
+	_ = backupDB.Close()
+	if err != nil {
+		t.Fatalf("failed to query requests from backup db: %v", err)
+	}
+	if len(logs) != 1 || logs[0].ID != "backup-test-1" {
+		t.Fatalf("expected 1 log with ID 'backup-test-1' in backup db, got %+v", logs)
+	}
+
+	// 3. Test overwrite existing backup
+	if err := dbSrc.Backup(ctx, backupDest); err != nil {
+		t.Fatalf("expected overwrite of existing backup to succeed: %v", err)
+	}
+
+	// 4. In-memory DB backup
+	memDB, err := New(":memory:")
+	if err != nil {
+		t.Fatalf("failed to create memory db: %v", err)
+	}
+	defer memDB.Close()
+
+	memLog := &RequestLog{
+		ID:             "mem-backup-1",
+		CreatedAt:      time.Now().UTC(),
+		ModelRequested: "claude-3-5-sonnet",
+		Provider:       "anthropic",
+		ModelRouted:    "claude-3-5-sonnet",
+		TotalTokens:    50,
+		StatusCode:     200,
+	}
+	_ = memDB.LogRequest(ctx, memLog)
+	_ = memDB.Flush(ctx)
+
+	memBackupDest := filepath.Join(tmpDir, "mem_backup.db")
+	if err := memDB.Backup(ctx, memBackupDest); err != nil {
+		t.Fatalf("memory db backup failed: %v", err)
+	}
+
+	loadedMemDB, err := New(memBackupDest)
+	if err != nil {
+		t.Fatalf("failed to open exported memory db: %v", err)
+	}
+	defer loadedMemDB.Close()
+
+	memLogs, err := loadedMemDB.QueryRequests(ctx, RequestLogFilter{})
+	if err != nil {
+		t.Fatalf("failed to query memory backup db: %v", err)
+	}
+	if len(memLogs) != 1 || memLogs[0].ID != "mem-backup-1" {
+		t.Fatalf("expected 1 log with ID 'mem-backup-1' in memory backup, got %+v", memLogs)
+	}
+}
+
 
 
 

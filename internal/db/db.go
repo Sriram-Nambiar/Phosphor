@@ -278,6 +278,50 @@ func (d *DB) Vacuum(ctx context.Context) error {
 	return nil
 }
 
+// Backup creates a clean, atomic, defragmented snapshot copy of the database at destPath.
+// If the destination directory does not exist, it is created.
+// If destPath already exists, it is safely replaced.
+func (d *DB) Backup(ctx context.Context, destPath string) error {
+	if d == nil || d.db == nil {
+		return errors.New("database not initialized")
+	}
+	destPath = strings.TrimSpace(destPath)
+	if destPath == "" {
+		return errors.New("destination path cannot be empty")
+	}
+
+	// Flush pending writes first to ensure all records are committed
+	_ = d.Flush(ctx)
+
+	dir := filepath.Dir(destPath)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("failed to create destination directory: %w", err)
+		}
+	}
+
+	// SQLite VACUUM INTO fails if target file already exists, so remove it first
+	if _, err := os.Stat(destPath); err == nil {
+		if err := os.Remove(destPath); err != nil {
+			return fmt.Errorf("failed to remove existing backup file: %w", err)
+		}
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	cleanPath := filepath.ToSlash(filepath.Clean(destPath))
+	escapedPath := strings.ReplaceAll(cleanPath, "'", "''")
+	query := fmt.Sprintf("VACUUM INTO '%s';", escapedPath)
+
+	if _, err := d.db.ExecContext(ctx, query); err != nil {
+		return fmt.Errorf("failed to backup database: %w", err)
+	}
+
+	return nil
+}
+
+
 // FileSize returns the size of the database file on disk in bytes.
 // If the database is in-memory (:memory:), it returns 0.
 func (d *DB) FileSize() (int64, error) {
