@@ -69,6 +69,7 @@ type Server struct {
 	router      *router.Router
 	database    *db.DB
 	cache       *cache.LRUCache
+	dedup       *cache.Deduplicator
 	rateLimiter *security.ClientRateLimiter
 	server      *http.Server
 	mux         *http.ServeMux
@@ -89,6 +90,7 @@ func NewServer(cfg *config.Config, r *router.Router, database *db.DB) *Server {
 		router:      r,
 		database:    database,
 		cache:       c,
+		dedup:       cache.NewDeduplicator(),
 		rateLimiter: security.NewClientRateLimiter(0),
 		mux:         http.NewServeMux(),
 	}
@@ -735,11 +737,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleNonStreamingCompletions(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, requestID string) {
 	ctx := r.Context()
-	var cacheKey string
+	cacheKey := cache.ComputeKey(req, "")
+	bypassCache := strings.Contains(strings.ToLower(r.Header.Get("Cache-Control")), "no-cache")
 
-	// Check response cache if enabled and not bypassed via Cache-Control: no-cache
-	if s.cache != nil && !strings.Contains(strings.ToLower(r.Header.Get("Cache-Control")), "no-cache") {
-		cacheKey = cache.ComputeKey(req, "")
+	// 1. Check response cache if enabled and not bypassed via Cache-Control: no-cache
+	if s.cache != nil && !bypassCache {
 		if cachedBytes, hit := s.cache.Get(cacheKey); hit {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("X-Cache", "HIT")
@@ -749,9 +751,92 @@ func (s *Server) handleNonStreamingCompletions(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	start := time.Now()
-	result, err := s.router.Execute(ctx, req, requestID)
-	latencyMs := float64(time.Since(start).Milliseconds())
+	executeUpstream := func() ([]byte, error) {
+		start := time.Now()
+		result, err := s.router.Execute(ctx, req, requestID)
+		latencyMs := float64(time.Since(start).Milliseconds())
+
+		if err != nil {
+			statusCode := http.StatusBadGateway
+			if provider.IsRateLimit(err) {
+				statusCode = http.StatusTooManyRequests
+			}
+			if s.database != nil {
+				logCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = s.database.LogRequest(logCtx, &db.RequestLog{
+					ID:             requestID,
+					CreatedAt:      time.Now().UTC(),
+					ModelRequested: req.Model,
+					Provider:       "none",
+					ModelRouted:    req.Model,
+					StatusCode:     statusCode,
+					LatencyMs:      latencyMs,
+					Stream:         false,
+					ErrorMsg:       security.RedactText(err.Error()),
+				})
+			}
+			return nil, err
+		}
+
+		resp := result.Response
+		promptTokens := resp.Usage.PromptTokens
+		compTokens := resp.Usage.CompletionTokens
+		totalTokens := resp.Usage.TotalTokens
+		if promptTokens == 0 {
+			promptTokens = router.EstimatePromptTokens(req)
+			if len(resp.Choices) > 0 {
+				compTokens = len(resp.Choices[0].Message.Content) / 4
+			}
+			totalTokens = promptTokens + compTokens
+		}
+
+		cost := router.CalculateCost(promptTokens, compTokens, result.Candidate.Cost)
+
+		if s.database != nil {
+			var clientName string
+			if client, ok := auth.GetClientInfo(r.Context()); ok {
+				clientName = client.Name
+			}
+			logCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = s.database.LogRequest(logCtx, &db.RequestLog{
+				ID:               requestID,
+				CreatedAt:        time.Now().UTC(),
+				ModelRequested:   req.Model,
+				Provider:         result.Candidate.ProviderName,
+				ModelRouted:      result.Candidate.Model,
+				PromptTokens:     promptTokens,
+				CompletionTokens: compTokens,
+				TotalTokens:      totalTokens,
+				EstimatedCost:    cost,
+				LatencyMs:        latencyMs,
+				TTFTMs:           0,
+				StatusCode:       http.StatusOK,
+				Stream:           false,
+				ClientName:       clientName,
+			})
+		}
+
+		respBytes, err := json.Marshal(resp)
+		if err != nil {
+			return nil, err
+		}
+		if s.cache != nil && cacheKey != "" {
+			s.cache.Set(cacheKey, respBytes, s.cfg.Cache.TTL)
+		}
+		return respBytes, nil
+	}
+
+	var respBytes []byte
+	var shared bool
+	var err error
+
+	if s.dedup != nil && !bypassCache {
+		respBytes, shared, err = s.dedup.Do(cacheKey, executeUpstream)
+	} else {
+		respBytes, err = executeUpstream()
+	}
 
 	if err != nil {
 		statusCode := http.StatusBadGateway
@@ -766,81 +851,21 @@ func (s *Server) handleNonStreamingCompletions(w http.ResponseWriter, r *http.Re
 			errType = "api_error"
 			errCode = "upstream_service_unavailable"
 		}
-
-		if s.database != nil {
-			logCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = s.database.LogRequest(logCtx, &db.RequestLog{
-				ID:             requestID,
-				CreatedAt:      time.Now().UTC(),
-				ModelRequested: req.Model,
-				Provider:       "none",
-				ModelRouted:    req.Model,
-				StatusCode:     statusCode,
-				LatencyMs:      latencyMs,
-				Stream:         false,
-				ErrorMsg:       security.RedactText(err.Error()),
-			})
-		}
-
 		writeOpenAIError(w, statusCode, security.RedactText(err.Error()), errType, errCode)
 		return
 	}
 
-	resp := result.Response
-	promptTokens := resp.Usage.PromptTokens
-	compTokens := resp.Usage.CompletionTokens
-	totalTokens := resp.Usage.TotalTokens
-	if promptTokens == 0 {
-		promptTokens = router.EstimatePromptTokens(req)
-		if len(resp.Choices) > 0 {
-			compTokens = len(resp.Choices[0].Message.Content) / 4
-		}
-		totalTokens = promptTokens + compTokens
-	}
-
-	cost := router.CalculateCost(promptTokens, compTokens, result.Candidate.Cost)
-
-	if s.database != nil {
-		var clientName string
-		if client, ok := auth.GetClientInfo(r.Context()); ok {
-			clientName = client.Name
-		}
-		logCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = s.database.LogRequest(logCtx, &db.RequestLog{
-			ID:               requestID,
-			CreatedAt:        time.Now().UTC(),
-			ModelRequested:   req.Model,
-			Provider:         result.Candidate.ProviderName,
-			ModelRouted:      result.Candidate.Model,
-			PromptTokens:     promptTokens,
-			CompletionTokens: compTokens,
-			TotalTokens:      totalTokens,
-			EstimatedCost:    cost,
-			LatencyMs:        latencyMs,
-			TTFTMs:           0,
-			StatusCode:       http.StatusOK,
-			Stream:           false,
-			ClientName:       clientName,
-		})
-	}
-
-	respBytes, err := json.Marshal(resp)
-	if err == nil && s.cache != nil && cacheKey != "" {
-		s.cache.Set(cacheKey, respBytes, s.cfg.Cache.TTL)
-	}
-
 	w.Header().Set("Content-Type", "application/json")
-	if s.cache != nil {
+	if shared {
+		w.Header().Set("X-Deduplicated", "true")
+		if s.cache != nil {
+			w.Header().Set("X-Cache", "HIT")
+		}
+	} else if s.cache != nil {
 		w.Header().Set("X-Cache", "MISS")
 	}
 	w.WriteHeader(http.StatusOK)
-	if len(respBytes) > 0 {
-		_, _ = w.Write(respBytes)
-	} else {
-		_ = json.NewEncoder(w).Encode(resp)
-	}
+	_, _ = w.Write(respBytes)
 }
 
 func (s *Server) handleStreamingCompletions(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, requestID string) {

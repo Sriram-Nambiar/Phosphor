@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1445,6 +1447,61 @@ func TestServer_ModelAliasing(t *testing.T) {
 	}
 	if receivedModel != "gpt-4o" {
 		t.Errorf("expected upstream to receive canonical model 'gpt-4o', got '%s'", receivedModel)
+	}
+}
+
+func TestServer_ConcurrentRequestDeduplication(t *testing.T) {
+	var upstreamCalls int32
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(60 * time.Millisecond) // Simulate LLM processing
+		val := atomic.AddInt32(&upstreamCalls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"id":"cmpl-dedup","choices":[{"message":{"role":"assistant","content":"deduped response %d"}}],"usage":{"prompt_tokens":10,"completion_tokens":10,"total_tokens":20}}`, val)
+	})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	srv.cfg.Cache.Enabled = true
+	srv.cfg.Cache.Capacity = 100
+	srv.cfg.Cache.TTL = 5 * time.Minute
+	srv.cache = cache.NewLRUCache(100, 5*time.Minute)
+
+	payload := `{"model":"gpt-4o","messages":[{"role":"user","content":"identical burst prompt"}]}`
+	const numConcurrent = 8
+	var wg sync.WaitGroup
+	wg.Add(numConcurrent)
+
+	recorders := make([]*httptest.ResponseRecorder, numConcurrent)
+
+	for i := 0; i < numConcurrent; i++ {
+		idx := i
+		recorders[idx] = httptest.NewRecorder()
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+			srv.ServeHTTP(recorders[idx], req)
+		}()
+	}
+
+	wg.Wait()
+
+	calls := atomic.LoadInt32(&upstreamCalls)
+	if calls != 1 {
+		t.Fatalf("expected exactly 1 upstream execution for %d concurrent requests, got %d", numConcurrent, calls)
+	}
+
+	dedupCount := 0
+	for i := 0; i < numConcurrent; i++ {
+		if recorders[i].Code != http.StatusOK {
+			t.Errorf("request %d failed with status %d", i, recorders[i].Code)
+		}
+		if recorders[i].Header().Get("X-Deduplicated") == "true" {
+			dedupCount++
+		}
+	}
+
+	if dedupCount == 0 {
+		t.Errorf("expected at least some requests to have X-Deduplicated: true, got 0")
 	}
 }
 
