@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  phosphor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: phosphor:latest
+    container_name: phosphor-gateway
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - PHOSPHOR_SERVER_HOST=0.0.0.0
+      - PHOSPHOR_SERVER_PORT=8080
+      - PHOSPHOR_DATABASE_PATH=/data/phosphor.db
+    volumes:
+      - phosphor-data:/data
+      - ./config.example.yaml:/etc/phosphor/config.yaml:ro
+    healthcheck:
+      test: ["CMD", "phosphor", "ping", "--url", "http://127.0.0.1:8080"]
+      interval: 15s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  phosphor-data:
+    driver: local
