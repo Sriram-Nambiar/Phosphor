@@ -104,6 +104,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 }
 
 func renderStartupBanner(cfg *config.Config) {
+	fmt.Println(FormatStartupBanner(cfg))
+}
+
+// FormatStartupBanner formats a terminal-first overview of gateway services, routes, and security.
+func FormatStartupBanner(cfg *config.Config) string {
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(lipgloss.Color("#FAFAFA")).
@@ -125,15 +130,41 @@ func renderStartupBanner(cfg *config.Config) {
 		}
 	}
 
+	authStatus := "Disabled"
+	if cfg.Auth.Enabled {
+		authStatus = fmt.Sprintf("Enabled (%d API keys)", len(cfg.Auth.Keys))
+	}
+
+	cacheStatus := "Disabled"
+	if cfg.Cache.Enabled {
+		cacheStatus = fmt.Sprintf("Enabled (TTL %v, Cap %d)", cfg.Cache.TTL, cfg.Cache.Capacity)
+	}
+
+	guardrailsStatus := "Disabled"
+	if cfg.Security.EnablePromptGuard {
+		guardrailsStatus = fmt.Sprintf("Enabled (threshold %.2f)", cfg.Security.BlockThreshold)
+	}
+
 	content := fmt.Sprintf("%s\n\n", titleStyle.Render("⚡ PHOSPHOR LLM GATEWAY"))
 	content += fmt.Sprintf("• %s: %s\n", accentStyle.Render("Listening"), fmt.Sprintf("http://%s:%d", cfg.Server.Host, cfg.Server.Port))
 	content += fmt.Sprintf("• %s: %s\n", accentStyle.Render("Database"), cfg.Database.Path)
 	content += fmt.Sprintf("• %s: %s\n", accentStyle.Render("Strategy"), string(cfg.Routing.DefaultStrategy))
-	content += fmt.Sprintf("• %s: %v\n\n", accentStyle.Render("Providers"), provList)
-	content += fmt.Sprintf("%s\n", subStyle.Render("Endpoints:"))
-	content += fmt.Sprintf("  POST /v1/chat/completions (JSON & Streaming SSE)\n")
-	content += fmt.Sprintf("  GET  /v1/models\n")
-	content += fmt.Sprintf("  GET  /health\n")
+	content += fmt.Sprintf("• %s: %v\n", accentStyle.Render("Providers"), provList)
+	content += fmt.Sprintf("• %s: %s\n", accentStyle.Render("Auth"), authStatus)
+	content += fmt.Sprintf("• %s: %s\n", accentStyle.Render("Cache"), cacheStatus)
+	content += fmt.Sprintf("• %s: %s\n\n", accentStyle.Render("Guardrails"), guardrailsStatus)
 
-	fmt.Println(boxStyle.Render(content))
+	content += fmt.Sprintf("%s\n", subStyle.Render("Core Endpoints:"))
+	content += fmt.Sprintf("  POST /v1/chat/completions       (JSON & Streaming SSE)\n")
+	content += fmt.Sprintf("  GET  /v1/models                 (Model catalog & aliases)\n")
+	content += fmt.Sprintf("  GET  /health, /ready            (Liveness & readiness probes)\n")
+	content += fmt.Sprintf("  GET  /metrics                   (Prometheus metrics)\n\n")
+
+	content += fmt.Sprintf("%s\n", subStyle.Render("Admin Endpoints:"))
+	content += fmt.Sprintf("  GET  /v1/admin/budgets          (Client spend & limit tracking)\n")
+	content += fmt.Sprintf("  GET  /v1/admin/cache/stats      (Cache hit/miss metrics)\n")
+	content += fmt.Sprintf("  POST /v1/admin/cache/clear      (Purge response cache)\n")
+	content += fmt.Sprintf("  POST /v1/admin/db/vacuum        (SQLite compaction & optimize)\n")
+
+	return boxStyle.Render(content)
 }
