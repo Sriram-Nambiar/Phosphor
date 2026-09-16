@@ -927,6 +927,30 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if chatReq.MaxTokens != nil && *chatReq.MaxTokens < 0 {
+		writeOpenAIError(w, http.StatusBadRequest, "max_tokens must be greater than or equal to 0", "invalid_request_error", "invalid_max_tokens")
+		return
+	}
+
+	if s.cfg.Security.MaxPromptChars > 0 || s.cfg.Security.MaxPromptTokens > 0 {
+		totalChars := 0
+		for _, m := range chatReq.Messages {
+			totalChars += len(m.Content)
+		}
+		estimatedTokens := 0
+		if s.cfg.Security.MaxPromptTokens > 0 {
+			estimatedTokens = router.EstimatePromptTokens(&chatReq)
+		}
+		if err := security.ValidatePromptLimits(totalChars, estimatedTokens, s.cfg.Security.MaxPromptChars, s.cfg.Security.MaxPromptTokens); err != nil {
+			errCode := "prompt_too_long"
+			if strings.Contains(err.Error(), "tokens") {
+				errCode = "max_tokens_exceeded"
+			}
+			writeOpenAIError(w, http.StatusBadRequest, err.Error(), "invalid_request_error", errCode)
+			return
+		}
+	}
+
 	requestedModel := chatReq.Model
 	if headerModel := strings.TrimSpace(r.Header.Get("X-Phosphor-Model")); headerModel != "" {
 		requestedModel = headerModel

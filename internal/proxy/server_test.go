@@ -2088,6 +2088,75 @@ func TestServer_ETagAndIfNoneMatch304(t *testing.T) {
 	}
 }
 
+func TestServer_PromptLimitsValidation(t *testing.T) {
+	srv, _, _ := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id":"cmpl-limit","choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+	})
+
+	// 1. MaxPromptChars limit exceeded
+	srv.cfg.Security.MaxPromptChars = 30
+	srv.cfg.Security.MaxPromptTokens = 0
+
+	longPrompt := `{"model":"gpt-4o","messages":[{"role":"user","content":"this is a prompt that is definitely longer than thirty characters"}]}`
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(longPrompt))
+	rr1 := httptest.NewRecorder()
+	srv.ServeHTTP(rr1, req1)
+
+	if rr1.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for char limit exceeded, got %d: %s", rr1.Code, rr1.Body.String())
+	}
+	if !strings.Contains(rr1.Body.String(), "prompt_too_long") {
+		t.Errorf("expected prompt_too_long error code, got %s", rr1.Body.String())
+	}
+
+	// 2. MaxPromptTokens limit exceeded
+	srv.cfg.Security.MaxPromptChars = 0
+	srv.cfg.Security.MaxPromptTokens = 5
+
+	tokenExceededPrompt := `{"model":"gpt-4o","messages":[{"role":"user","content":"word1 word2 word3 word4 word5 word6 word7 word8 word9 word10"}]}`
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(tokenExceededPrompt))
+	rr2 := httptest.NewRecorder()
+	srv.ServeHTTP(rr2, req2)
+
+	if rr2.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for token limit exceeded, got %d: %s", rr2.Code, rr2.Body.String())
+	}
+	if !strings.Contains(rr2.Body.String(), "max_tokens_exceeded") {
+		t.Errorf("expected max_tokens_exceeded error code, got %s", rr2.Body.String())
+	}
+
+	// 3. Within limits
+	srv.cfg.Security.MaxPromptChars = 500
+	srv.cfg.Security.MaxPromptTokens = 500
+	req3 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
+	rr3 := httptest.NewRecorder()
+	srv.ServeHTTP(rr3, req3)
+
+	if rr3.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK when within limits, got %d: %s", rr3.Code, rr3.Body.String())
+	}
+}
+
+func TestServer_NegativeMaxTokensRejected(t *testing.T) {
+	srv, _, _ := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	payload := `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":-10}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for negative max_tokens, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "invalid_max_tokens") {
+		t.Errorf("expected invalid_max_tokens error code, got %s", rr.Body.String())
+	}
+}
+
+
 
 
 

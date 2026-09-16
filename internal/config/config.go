@@ -52,6 +52,8 @@ type SecurityConfig struct {
 	BlockThreshold    float64  `mapstructure:"block_threshold" yaml:"block_threshold"`
 	AllowedIPs        []string `mapstructure:"allowed_ips,omitempty" yaml:"allowed_ips,omitempty"`
 	BlockedIPs        []string `mapstructure:"blocked_ips,omitempty" yaml:"blocked_ips,omitempty"`
+	MaxPromptTokens   int      `mapstructure:"max_prompt_tokens,omitempty" yaml:"max_prompt_tokens,omitempty"`
+	MaxPromptChars    int      `mapstructure:"max_prompt_chars,omitempty" yaml:"max_prompt_chars,omitempty"`
 }
 
 type AuthConfig struct {
@@ -492,6 +494,12 @@ func (c *Config) Validate() error {
 		if c.Security.BlockThreshold < 0 || c.Security.BlockThreshold > 1.0 {
 			errs = append(errs, "security.block_threshold must be between 0.0 and 1.0")
 		}
+	}
+	if c.Security.MaxPromptTokens < 0 {
+		errs = append(errs, "security.max_prompt_tokens cannot be negative")
+	}
+	if c.Security.MaxPromptChars < 0 {
+		errs = append(errs, "security.max_prompt_chars cannot be negative")
 	}
 
 	for _, ipStr := range c.Security.AllowedIPs {
