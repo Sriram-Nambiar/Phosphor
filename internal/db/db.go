@@ -982,6 +982,118 @@ LIMIT ?;`
 	return logs, rows.Err()
 }
 
+// RequestLogFilter defines criteria for querying and filtering stored request logs.
+type RequestLogFilter struct {
+	ClientName string
+	Model      string
+	Provider   string
+	Since      time.Time
+	Until      time.Time
+	Limit      int
+	Offset     int
+}
+
+// QueryRequests executes a filtered query over stored request logs in SQLite.
+func (d *DB) QueryRequests(ctx context.Context, filter RequestLogFilter) ([]RequestLog, error) {
+	if d == nil || d.db == nil {
+		return nil, errors.New("database not initialized")
+	}
+	_ = d.Flush(ctx)
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var whereClauses []string
+	var args []interface{}
+
+	if filter.ClientName != "" {
+		whereClauses = append(whereClauses, "client_name = ?")
+		args = append(args, filter.ClientName)
+	}
+	if filter.Model != "" {
+		whereClauses = append(whereClauses, "(model_requested = ? OR model_routed = ?)")
+		args = append(args, filter.Model, filter.Model)
+	}
+	if filter.Provider != "" {
+		whereClauses = append(whereClauses, "provider = ?")
+		args = append(args, filter.Provider)
+	}
+	if !filter.Since.IsZero() {
+		whereClauses = append(whereClauses, "created_at >= ?")
+		args = append(args, filter.Since.Format(time.RFC3339Nano))
+	}
+	if !filter.Until.IsZero() {
+		whereClauses = append(whereClauses, "created_at <= ?")
+		args = append(args, filter.Until.Format(time.RFC3339Nano))
+	}
+
+	whereSQL := ""
+	if len(whereClauses) > 0 {
+		whereSQL = "WHERE " + strings.Join(whereClauses, " AND ")
+	}
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	args = append(args, limit)
+
+	query := fmt.Sprintf(`
+SELECT 
+    id, created_at, model_requested, provider, model_routed,
+    prompt_tokens, completion_tokens, total_tokens, estimated_cost,
+    latency_ms, ttft_ms, status_code, stream, COALESCE(error_msg, ''),
+    COALESCE(client_name, ''), COALESCE(correlation_id, ''), COALESCE(session_id, '')
+FROM requests
+%s
+ORDER BY created_at DESC
+LIMIT ?`, whereSQL)
+
+	if filter.Offset > 0 {
+		query += " OFFSET ?"
+		args = append(args, filter.Offset)
+	}
+	query += ";"
+
+	rows, err := d.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query requests: %w", err)
+	}
+	defer rows.Close()
+
+	var logs []RequestLog
+	for rows.Next() {
+		var r RequestLog
+		var createdAtStr string
+		var streamInt int
+		if err := rows.Scan(
+			&r.ID,
+			&createdAtStr,
+			&r.ModelRequested,
+			&r.Provider,
+			&r.ModelRouted,
+			&r.PromptTokens,
+			&r.CompletionTokens,
+			&r.TotalTokens,
+			&r.EstimatedCost,
+			&r.LatencyMs,
+			&r.TTFTMs,
+			&r.StatusCode,
+			&streamInt,
+			&r.ErrorMsg,
+			&r.ClientName,
+			&r.CorrelationID,
+			&r.SessionID,
+		); err != nil {
+			return nil, err
+		}
+		r.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAtStr)
+		r.Stream = streamInt == 1
+		logs = append(logs, r)
+	}
+
+	return logs, rows.Err()
+}
+
 func (d *DB) GetRecentFailovers(ctx context.Context, limit int) ([]FailoverTrace, error) {
 	_ = d.Flush(ctx)
 	d.mu.RLock()

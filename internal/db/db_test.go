@@ -729,6 +729,85 @@ func TestDB_LatencyPercentiles(t *testing.T) {
 	}
 }
 
+func TestDB_QueryRequestsFilter(t *testing.T) {
+	d, err := New(":memory:")
+	if err != nil {
+		t.Fatalf("failed to initialize db: %v", err)
+	}
+	defer d.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// Insert 3 diverse records
+	_ = d.LogRequestSync(ctx, &RequestLog{
+		ModelRequested: "gpt-4o",
+		Provider:       "openai",
+		ModelRouted:    "gpt-4o-2024-08-06",
+		ClientName:     "client-a",
+		CreatedAt:      now.Add(-2 * time.Minute),
+		StatusCode:     200,
+	})
+	_ = d.LogRequestSync(ctx, &RequestLog{
+		ModelRequested: "claude-3-5-sonnet",
+		Provider:       "anthropic",
+		ModelRouted:    "claude-3-5-sonnet",
+		ClientName:     "client-b",
+		CreatedAt:      now.Add(-1 * time.Minute),
+		StatusCode:     200,
+	})
+	_ = d.LogRequestSync(ctx, &RequestLog{
+		ModelRequested: "llama-3",
+		Provider:       "ollama",
+		ModelRouted:    "llama-3-8b",
+		ClientName:     "client-a",
+		CreatedAt:      now,
+		StatusCode:     200,
+	})
+
+	// 1. Filter by client_name
+	resA, err := d.QueryRequests(ctx, RequestLogFilter{ClientName: "client-a"})
+	if err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+	if len(resA) != 2 {
+		t.Fatalf("expected 2 requests for client-a, got %d", len(resA))
+	}
+	for _, r := range resA {
+		if r.ClientName != "client-a" {
+			t.Errorf("expected client-a, got %s", r.ClientName)
+		}
+	}
+
+	// 2. Filter by model
+	resModel, err := d.QueryRequests(ctx, RequestLogFilter{Model: "claude-3-5-sonnet"})
+	if err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+	if len(resModel) != 1 || resModel[0].ClientName != "client-b" {
+		t.Fatalf("expected 1 record for claude-3-5-sonnet from client-b, got %+v", resModel)
+	}
+
+	// 3. Filter by provider
+	resProv, err := d.QueryRequests(ctx, RequestLogFilter{Provider: "ollama"})
+	if err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+	if len(resProv) != 1 || resProv[0].Provider != "ollama" {
+		t.Fatalf("expected 1 record for ollama, got %+v", resProv)
+	}
+
+	// 4. Limit and Offset
+	resLimit, err := d.QueryRequests(ctx, RequestLogFilter{Limit: 1})
+	if err != nil {
+		t.Fatalf("query failed: %v", err)
+	}
+	if len(resLimit) != 1 {
+		t.Fatalf("expected 1 record with limit=1, got %d", len(resLimit))
+	}
+}
+
+
 
 
 
