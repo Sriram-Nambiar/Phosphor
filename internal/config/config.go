@@ -135,11 +135,13 @@ type ProviderConfig struct {
 }
 
 type TargetModel struct {
-	Provider     string      `mapstructure:"provider" yaml:"provider"`
-	Model        string      `mapstructure:"model" yaml:"model"`
-	Cost         *CostConfig `mapstructure:"cost,omitempty" yaml:"cost,omitempty"`
-	Weight       int         `mapstructure:"weight,omitempty" yaml:"weight,omitempty"`
-	Capabilities []string    `mapstructure:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	Provider       string      `mapstructure:"provider" yaml:"provider"`
+	Model          string      `mapstructure:"model" yaml:"model"`
+	Cost           *CostConfig `mapstructure:"cost,omitempty" yaml:"cost,omitempty"`
+	Weight         int         `mapstructure:"weight,omitempty" yaml:"weight,omitempty"`
+	Capabilities   []string    `mapstructure:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	TimeoutSeconds int         `mapstructure:"timeout_seconds,omitempty" yaml:"timeout_seconds,omitempty"`
+	TimeoutMs      int         `mapstructure:"timeout_ms,omitempty" yaml:"timeout_ms,omitempty"`
 }
 
 type ModelRule struct {
@@ -533,6 +535,12 @@ func (c *Config) Validate() error {
 			}
 			if tgt.Weight < 0 {
 				errs = append(errs, fmt.Sprintf("models['%s'].targets[%d].weight cannot be negative", mName, tIdx))
+			}
+			if tgt.TimeoutSeconds < 0 {
+				errs = append(errs, fmt.Sprintf("models['%s'].targets[%d].timeout_seconds cannot be negative", mName, tIdx))
+			}
+			if tgt.TimeoutMs < 0 {
+				errs = append(errs, fmt.Sprintf("models['%s'].targets[%d].timeout_ms cannot be negative", mName, tIdx))
 			}
 		}
 	}

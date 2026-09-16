@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/Sriram-Nambiar/Phosphor/internal/config"
 	"github.com/Sriram-Nambiar/Phosphor/internal/provider"
@@ -117,5 +118,85 @@ func TestRouter_CrossFamilyFallbackModelGroups(t *testing.T) {
 	}
 	if res.FailoverTraces[0].FromProvider != "openai-primary" || res.FailoverTraces[0].ToProvider != "anthropic-fallback" {
 		t.Errorf("unexpected failover trace: %+v", res.FailoverTraces[0])
+	}
+}
+
+func TestRouter_TargetTimeoutFailover(t *testing.T) {
+	// Slow primary server takes 300ms
+	slowSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(300 * time.Millisecond):
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"choices":[{"message":{"content":"Slow response"}}]}`))
+		}
+	}))
+	defer slowSrv.Close()
+
+	// Fast secondary server returns immediately
+	fastSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"choices":[{"message":{"content":"Fast fallback response"}}]}`))
+	}))
+	defer fastSrv.Close()
+
+	cfg := &config.Config{
+		Routing: config.RoutingConfig{DefaultStrategy: config.StrategyPriority},
+		Providers: []config.ProviderConfig{
+			{
+				Name:    "slow-primary",
+				Type:    config.ProviderTypeOpenAI,
+				BaseURL: slowSrv.URL,
+				Enabled: true,
+			},
+			{
+				Name:    "fast-fallback",
+				Type:    config.ProviderTypeOpenAI,
+				BaseURL: fastSrv.URL,
+				Enabled: true,
+			},
+		},
+		Models: map[string]config.ModelRule{
+			"gpt-4o": {
+				Strategy: config.StrategyPriority,
+				Targets: []config.TargetModel{
+					{
+						Provider:  "slow-primary",
+						Model:     "gpt-4o",
+						TimeoutMs: 60,
+					},
+					{
+						Provider: "fast-fallback",
+						Model:    "gpt-4o",
+					},
+				},
+			},
+		},
+	}
+
+	r, err := NewRouter(cfg, nil)
+	if err != nil {
+		t.Fatalf("failed to create router: %v", err)
+	}
+
+	req := &provider.ChatRequest{
+		Model: "gpt-4o",
+		Messages: []provider.ChatMessage{
+			{Role: "user", Content: "Hello gateway"},
+		},
+	}
+
+	res, err := r.Execute(context.Background(), req, "req-timeout-test")
+	if err != nil {
+		t.Fatalf("expected failover to succeed after timeout, got err: %v", err)
+	}
+
+	if res.Candidate.ProviderName != "fast-fallback" {
+		t.Errorf("expected failover to fast-fallback, got %s", res.Candidate.ProviderName)
+	}
+	if len(res.Response.Choices) == 0 || res.Response.Choices[0].Message.Content != "Fast fallback response" {
+		t.Errorf("unexpected response content: %+v", res.Response)
 	}
 }

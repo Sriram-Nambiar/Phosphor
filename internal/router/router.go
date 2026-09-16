@@ -22,6 +22,7 @@ type CandidateTarget struct {
 	BreakerState CircuitState
 	Weight       int
 	Capabilities []string
+	Timeout      time.Duration
 }
 
 // SupportsCapability checks if the candidate target supports the required capability.
@@ -307,6 +308,17 @@ func (r *Router) buildCandidatesForTargets(targets []config.TargetModel) []Candi
 			bState = cb.GetState()
 		}
 
+		var timeout time.Duration
+		if tm.TimeoutMs > 0 {
+			timeout = time.Duration(tm.TimeoutMs) * time.Millisecond
+		} else if tm.TimeoutSeconds > 0 {
+			timeout = time.Duration(tm.TimeoutSeconds) * time.Second
+		} else if pCfg.TimeoutSeconds > 0 {
+			timeout = time.Duration(pCfg.TimeoutSeconds) * time.Second
+		} else if r.cfg.Routing.TimeoutSeconds > 0 {
+			timeout = time.Duration(r.cfg.Routing.TimeoutSeconds) * time.Second
+		}
+
 		candidates = append(candidates, CandidateTarget{
 			ProviderName: tm.Provider,
 			Model:        tm.Model,
@@ -316,6 +328,7 @@ func (r *Router) buildCandidatesForTargets(targets []config.TargetModel) []Candi
 			BreakerState: bState,
 			Weight:       weight,
 			Capabilities: caps,
+			Timeout:      timeout,
 		})
 	}
 	return candidates
@@ -528,10 +541,19 @@ func (r *Router) Execute(ctx context.Context, req *provider.ChatRequest, request
 		targetReq := *req
 		targetReq.Model = cand.Model
 
+		sendCtx := ctx
+		var cancel context.CancelFunc
+		if cand.Timeout > 0 {
+			sendCtx, cancel = context.WithTimeout(ctx, cand.Timeout)
+		}
+
 		attemptStart := time.Now()
-		resp, attemptErr := cand.Client.Send(ctx, &targetReq)
+		resp, attemptErr := cand.Client.Send(sendCtx, &targetReq)
 		attemptLatency := float64(time.Since(attemptStart).Milliseconds())
 		release()
+		if cancel != nil {
+			cancel()
+		}
 
 		if attemptErr == nil {
 			// Success!
@@ -634,18 +656,27 @@ func (r *Router) ExecuteStream(ctx context.Context, req *provider.ChatRequest, r
 		targetReq := *req
 		targetReq.Model = cand.Model
 
+		candCtx := ctx
+		var cancel context.CancelFunc
+		if cand.Timeout > 0 {
+			candCtx, cancel = context.WithTimeout(ctx, cand.Timeout)
+		}
+
 		attemptStart := time.Now()
-		streamChan, attemptErr := cand.Client.Stream(ctx, &targetReq)
+		streamChan, attemptErr := cand.Client.Stream(candCtx, &targetReq)
 		attemptLatency := float64(time.Since(attemptStart).Milliseconds())
 
 		if attemptErr == nil {
 			wrappedChan := make(chan provider.StreamChunk)
 			go func() {
 				defer release()
+				if cancel != nil {
+					defer cancel()
+				}
 				defer close(wrappedChan)
 				for {
 					select {
-					case <-ctx.Done():
+					case <-candCtx.Done():
 						return
 					case chunk, ok := <-streamChan:
 						if !ok {
@@ -653,7 +684,7 @@ func (r *Router) ExecuteStream(ctx context.Context, req *provider.ChatRequest, r
 						}
 						select {
 						case wrappedChan <- chunk:
-						case <-ctx.Done():
+						case <-candCtx.Done():
 							return
 						}
 					}
@@ -667,6 +698,9 @@ func (r *Router) ExecuteStream(ctx context.Context, req *provider.ChatRequest, r
 			}, nil
 		}
 
+		if cancel != nil {
+			cancel()
+		}
 		release()
 
 		// Initial connection failed
