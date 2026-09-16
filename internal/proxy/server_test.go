@@ -1071,5 +1071,57 @@ func TestServer_ResponseCache(t *testing.T) {
 	}
 }
 
+func TestServer_StreamingResponseCache(t *testing.T) {
+	callCount := 0
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"id":"cmpl-%d","choices":[{"message":{"role":"assistant","content":"stream hello"}}],"usage":{"prompt_tokens":5,"completion_tokens":5,"total_tokens":10}}`, callCount)
+	})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	srv.cfg.Cache.Enabled = true
+	srv.cfg.Cache.Capacity = 100
+	srv.cfg.Cache.TTL = 10 * time.Minute
+	srv.cache = cache.NewLRUCache(100, 10*time.Minute)
+
+	// Pre-populate cache via non-streaming call
+	payloadNonStream := `{"model":"gpt-4o","messages":[{"role":"user","content":"stream cache test"}]}`
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payloadNonStream))
+	rr1 := httptest.NewRecorder()
+	srv.ServeHTTP(rr1, req1)
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("setup non-stream request failed: %d", rr1.Code)
+	}
+	if callCount != 1 {
+		t.Fatalf("expected callCount 1, got %d", callCount)
+	}
+
+	// Now send streaming request with exact same prompt
+	payloadStream := `{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"stream cache test"}]}`
+	reqStream := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payloadStream))
+	rrStream := httptest.NewRecorder()
+	srv.ServeHTTP(rrStream, reqStream)
+
+	if rrStream.Code != http.StatusOK {
+		t.Fatalf("streaming request failed: %d: %s", rrStream.Code, rrStream.Body.String())
+	}
+	if rrStream.Header().Get("X-Cache") != "HIT" {
+		t.Errorf("expected X-Cache HIT for streaming replay, got %s", rrStream.Header().Get("X-Cache"))
+	}
+	if callCount != 1 {
+		t.Errorf("expected upstream callCount=1 (served from cache replay), got %d", callCount)
+	}
+	body := rrStream.Body.String()
+	if !strings.Contains(body, "stream hello") {
+		t.Errorf("expected stream replay to contain 'stream hello', got: %s", body)
+	}
+	if !strings.Contains(body, "data: [DONE]") {
+		t.Errorf("expected stream replay to terminate with [DONE]")
+	}
+}
+
+
 
 

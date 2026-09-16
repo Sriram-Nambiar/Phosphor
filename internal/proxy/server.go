@@ -550,7 +550,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	requestID := GetRequestID(r.Context())
 
 	if chatReq.Stream {
-		s.handleStreamingCompletions(w, r.Context(), &chatReq, requestID)
+		s.handleStreamingCompletions(w, r, &chatReq, requestID)
 	} else {
 		s.handleNonStreamingCompletions(w, r, &chatReq, requestID)
 	}
@@ -661,11 +661,78 @@ func (s *Server) handleNonStreamingCompletions(w http.ResponseWriter, r *http.Re
 	}
 }
 
-func (s *Server) handleStreamingCompletions(w http.ResponseWriter, ctx context.Context, req *provider.ChatRequest, requestID string) {
+func (s *Server) handleStreamingCompletions(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, requestID string) {
+	ctx := r.Context()
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeOpenAIError(w, http.StatusInternalServerError, "Streaming unsupported by underlying transport", "api_error", "streaming_unsupported")
 		return
+	}
+
+	var cacheKey string
+	if s.cache != nil && !strings.Contains(strings.ToLower(r.Header.Get("Cache-Control")), "no-cache") {
+		cacheKey = cache.ComputeKey(req, "")
+		if cachedBytes, hit := s.cache.Get(cacheKey); hit {
+			var cachedResp provider.ChatResponse
+			if err := json.Unmarshal(cachedBytes, &cachedResp); err == nil {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				w.Header().Set("X-Accel-Buffering", "no")
+				w.Header().Set("X-Cache", "HIT")
+				w.WriteHeader(http.StatusOK)
+				flusher.Flush()
+
+				content := ""
+				if len(cachedResp.Choices) > 0 {
+					content = cachedResp.Choices[0].Message.Content
+				}
+
+				// Replay role
+				chunk1 := provider.StreamChunk{
+					ID:      requestID,
+					Object:  "chat.completion.chunk",
+					Created: time.Now().Unix(),
+					Model:   req.Model,
+					Choices: []provider.StreamChoice{
+						{Index: 0, Delta: provider.StreamDelta{Role: "assistant"}},
+					},
+				}
+				_ = provider.WriteSSEChunk(w, chunk1)
+				flusher.Flush()
+
+				// Replay content
+				chunk2 := provider.StreamChunk{
+					ID:      requestID,
+					Object:  "chat.completion.chunk",
+					Created: time.Now().Unix(),
+					Model:   req.Model,
+					Choices: []provider.StreamChoice{
+						{Index: 0, Delta: provider.StreamDelta{Content: content}, FinishReason: "stop"},
+					},
+				}
+				_ = provider.WriteSSEChunk(w, chunk2)
+				flusher.Flush()
+
+				// Usage chunk if requested
+				if req.StreamOptions != nil && req.StreamOptions.IncludeUsage {
+					chunk3 := provider.StreamChunk{
+						ID:      requestID,
+						Object:  "chat.completion.chunk",
+						Created: time.Now().Unix(),
+						Model:   req.Model,
+						Choices: []provider.StreamChoice{},
+						Usage:   &cachedResp.Usage,
+					}
+					_ = provider.WriteSSEChunk(w, chunk3)
+					flusher.Flush()
+				}
+
+				_, _ = w.Write([]byte("data: [DONE]\n\n"))
+				flusher.Flush()
+				return
+			}
+		}
 	}
 
 	start := time.Now()
@@ -710,8 +777,13 @@ func (s *Server) handleStreamingCompletions(w http.ResponseWriter, ctx context.C
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
+	if s.cache != nil {
+		w.Header().Set("X-Cache", "MISS")
+	}
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
+
+	var accumulatedContent strings.Builder
 
 	firstChunk := true
 	var ttftMs float64
@@ -798,6 +870,7 @@ streamLoop:
 
 			if len(chunk.Choices) > 0 {
 				completionChars += len(chunk.Choices[0].Delta.Content)
+				accumulatedContent.WriteString(chunk.Choices[0].Delta.Content)
 				if chunk.Choices[0].FinishReason != "" {
 					lastFinishReason = chunk.Choices[0].FinishReason
 				}
@@ -854,6 +927,34 @@ streamLoop:
 		// Terminate SSE stream normally
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 		flusher.Flush()
+
+		// Cache successful streaming completion for future requests
+		if s.cache != nil && cacheKey != "" {
+			cachedObj := provider.ChatResponse{
+				ID:      requestID,
+				Object:  "chat.completion",
+				Created: time.Now().Unix(),
+				Model:   streamResult.Candidate.Model,
+				Choices: []provider.ChatChoice{
+					{
+						Index: 0,
+						Message: provider.ChatMessage{
+							Role:    "assistant",
+							Content: accumulatedContent.String(),
+						},
+						FinishReason: "stop",
+					},
+				},
+				Usage: provider.Usage{
+					PromptTokens:     promptTokens,
+					CompletionTokens: compTokens,
+					TotalTokens:      totalTokens,
+				},
+			}
+			if data, err := json.Marshal(cachedObj); err == nil {
+				s.cache.Set(cacheKey, data, s.cfg.Cache.TTL)
+			}
+		}
 	}
 
 	statusCode := http.StatusOK
