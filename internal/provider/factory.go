@@ -9,8 +9,10 @@ import (
 // NewProvider instantiates the proper Provider implementation based on configuration.
 func NewProvider(cfg config.ProviderConfig) (Provider, error) {
 	switch cfg.Type {
-	case config.ProviderTypeOpenAI, config.ProviderTypeGroq, config.ProviderTypeGemini:
+	case config.ProviderTypeOpenAI, config.ProviderTypeGroq:
 		return NewOpenAIProvider(cfg), nil
+	case config.ProviderTypeGemini:
+		return NewGeminiProvider(cfg), nil
 	case config.ProviderTypeAnthropic:
 		return NewAnthropicProvider(cfg), nil
 	case config.ProviderTypeOllama:
