@@ -665,5 +665,70 @@ func TestDB_DegradedStateAndErrorTracking(t *testing.T) {
 	}
 }
 
+func TestDB_LatencyPercentiles(t *testing.T) {
+	d, err := New(":memory:")
+	if err != nil {
+		t.Fatalf("failed to initialize db: %v", err)
+	}
+	defer d.Close()
+
+	ctx := context.Background()
+
+	// Empty database
+	emptyPct, err := d.GetLatencyPercentiles(ctx)
+	if err != nil {
+		t.Fatalf("expected nil error on empty db: %v", err)
+	}
+	if emptyPct.Count != 0 || emptyPct.P50 != 0 {
+		t.Errorf("expected zero percentiles on empty db, got %+v", emptyPct)
+	}
+
+	// Insert 10 requests with controlled latencies: 100, 200, ..., 1000 ms
+	for i := 1; i <= 10; i++ {
+		provider := "p1"
+		if i > 5 {
+			provider = "p2"
+		}
+		_ = d.LogRequestSync(ctx, &RequestLog{
+			ModelRequested: "gpt-4o",
+			Provider:       provider,
+			ModelRouted:    "gpt-4o",
+			PromptTokens:   10,
+			StatusCode:     200,
+			LatencyMs:      float64(i * 100),
+		})
+	}
+
+	overall, err := d.GetLatencyPercentiles(ctx)
+	if err != nil {
+		t.Fatalf("failed to get overall percentiles: %v", err)
+	}
+	if overall.Count != 10 {
+		t.Fatalf("expected 10 records, got %d", overall.Count)
+	}
+	// With 10 items (index 0..9):
+	// p50: index int(9 * 0.50) = 4 -> 500ms
+	// p90: index int(9 * 0.90) = 8 -> 900ms
+	// p99: index int(9 * 0.99) = 8 -> 900ms
+	if overall.P50 != 500.0 {
+		t.Errorf("expected p50 500.0, got %.2f", overall.P50)
+	}
+	if overall.P90 != 900.0 {
+		t.Errorf("expected p90 900.0, got %.2f", overall.P90)
+	}
+
+	provMap, err := d.GetProviderLatencyPercentiles(ctx)
+	if err != nil {
+		t.Fatalf("failed to get provider percentiles: %v", err)
+	}
+	if len(provMap) != 2 {
+		t.Fatalf("expected 2 providers, got %d", len(provMap))
+	}
+	if provMap["p1"].Count != 5 || provMap["p2"].Count != 5 {
+		t.Errorf("unexpected provider counts: %+v", provMap)
+	}
+}
+
+
 
 

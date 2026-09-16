@@ -97,6 +97,13 @@ type ProviderStat struct {
 	AvgTTFTMs     float64 `json:"avg_ttft_ms"`
 }
 
+type LatencyPercentiles struct {
+	Count int     `json:"count"`
+	P50   float64 `json:"p50"`
+	P90   float64 `json:"p90"`
+	P99   float64 `json:"p99"`
+}
+
 const schema = `
 CREATE TABLE IF NOT EXISTS requests (
     id TEXT PRIMARY KEY,
@@ -839,6 +846,81 @@ GROUP BY provider;`
 	}
 
 	return stats, rows.Err()
+}
+
+// GetLatencyPercentiles computes overall request latency percentiles (p50, p90, p99).
+func (d *DB) GetLatencyPercentiles(ctx context.Context) (LatencyPercentiles, error) {
+	if d == nil || d.db == nil {
+		return LatencyPercentiles{}, errors.New("database not initialized")
+	}
+	_ = d.Flush(ctx)
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	query := `SELECT latency_ms FROM requests WHERE latency_ms > 0 ORDER BY latency_ms ASC;`
+	rows, err := d.db.QueryContext(ctx, query)
+	if err != nil {
+		return LatencyPercentiles{}, fmt.Errorf("failed to query latencies: %w", err)
+	}
+	defer rows.Close()
+
+	var latencies []float64
+	for rows.Next() {
+		var lat float64
+		if err := rows.Scan(&lat); err == nil {
+			latencies = append(latencies, lat)
+		}
+	}
+
+	return computePercentiles(latencies), nil
+}
+
+// GetProviderLatencyPercentiles computes per-provider latency percentiles (p50, p90, p99).
+func (d *DB) GetProviderLatencyPercentiles(ctx context.Context) (map[string]LatencyPercentiles, error) {
+	if d == nil || d.db == nil {
+		return nil, errors.New("database not initialized")
+	}
+	_ = d.Flush(ctx)
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	query := `SELECT provider, latency_ms FROM requests WHERE latency_ms > 0 ORDER BY provider, latency_ms ASC;`
+	rows, err := d.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query provider latencies: %w", err)
+	}
+	defer rows.Close()
+
+	provMap := make(map[string][]float64)
+	for rows.Next() {
+		var prov string
+		var lat float64
+		if err := rows.Scan(&prov, &lat); err == nil {
+			provMap[prov] = append(provMap[prov], lat)
+		}
+	}
+
+	res := make(map[string]LatencyPercentiles, len(provMap))
+	for p, lats := range provMap {
+		res[p] = computePercentiles(lats)
+	}
+	return res, nil
+}
+
+func computePercentiles(sorted []float64) LatencyPercentiles {
+	n := len(sorted)
+	if n == 0 {
+		return LatencyPercentiles{}
+	}
+	p50Idx := int(float64(n-1) * 0.50)
+	p90Idx := int(float64(n-1) * 0.90)
+	p99Idx := int(float64(n-1) * 0.99)
+	return LatencyPercentiles{
+		Count: n,
+		P50:   sorted[p50Idx],
+		P90:   sorted[p90Idx],
+		P99:   sorted[p99Idx],
+	}
 }
 
 func (d *DB) GetRecentRequests(ctx context.Context, limit int) ([]RequestLog, error) {

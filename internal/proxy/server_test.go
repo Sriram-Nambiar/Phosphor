@@ -1022,6 +1022,23 @@ func TestServer_MetricsEndpoint(t *testing.T) {
 		t.Errorf("expected cache entries gauge in metrics: %s", updatedBody)
 	}
 
+	// Send a valid chat request and check latency percentiles
+	reqChat := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o","messages":[{"role":"user","content":"metric test"}]}`))
+	rrChat := httptest.NewRecorder()
+	srv.ServeHTTP(rrChat, reqChat)
+	if rrChat.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for chat: %d", rrChat.Code)
+	}
+	_ = dbInstance.Flush(context.Background())
+
+	reqWithLatency := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rrWithLatency := httptest.NewRecorder()
+	srv.ServeHTTP(rrWithLatency, reqWithLatency)
+	bodyWithLatency := rrWithLatency.Body.String()
+	if !strings.Contains(bodyWithLatency, "phosphor_latency_percentile_ms{quantile=\"0.5\"}") {
+		t.Errorf("expected phosphor_latency_percentile_ms in metrics: %s", bodyWithLatency)
+	}
+
 	// 3. POST /metrics should return 405 Method Not Allowed
 	reqPost := httptest.NewRequest(http.MethodPost, "/metrics", nil)
 	rrPost := httptest.NewRecorder()

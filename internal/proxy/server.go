@@ -522,6 +522,28 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			buf.WriteString("# TYPE phosphor_failovers_total counter\n")
 			fmt.Fprintf(&buf, "phosphor_failovers_total %d\n\n", stats.TotalFailovers)
 		}
+
+		// 6. Latency percentiles (p50, p90, p99)
+		pStats, err := s.database.GetLatencyPercentiles(r.Context())
+		if err == nil && pStats.Count > 0 {
+			buf.WriteString("# HELP phosphor_latency_percentile_ms Request latency percentiles across all models.\n")
+			buf.WriteString("# TYPE phosphor_latency_percentile_ms gauge\n")
+			fmt.Fprintf(&buf, "phosphor_latency_percentile_ms{quantile=\"0.5\"} %.2f\n", pStats.P50)
+			fmt.Fprintf(&buf, "phosphor_latency_percentile_ms{quantile=\"0.9\"} %.2f\n", pStats.P90)
+			fmt.Fprintf(&buf, "phosphor_latency_percentile_ms{quantile=\"0.99\"} %.2f\n\n", pStats.P99)
+		}
+
+		provPercentiles, err := s.database.GetProviderLatencyPercentiles(r.Context())
+		if err == nil && len(provPercentiles) > 0 {
+			buf.WriteString("# HELP phosphor_provider_latency_percentile_ms Provider request latency percentiles.\n")
+			buf.WriteString("# TYPE phosphor_provider_latency_percentile_ms gauge\n")
+			for prov, pp := range provPercentiles {
+				fmt.Fprintf(&buf, "phosphor_provider_latency_percentile_ms{provider=%q,quantile=\"0.5\"} %.2f\n", prov, pp.P50)
+				fmt.Fprintf(&buf, "phosphor_provider_latency_percentile_ms{provider=%q,quantile=\"0.9\"} %.2f\n", prov, pp.P90)
+				fmt.Fprintf(&buf, "phosphor_provider_latency_percentile_ms{provider=%q,quantile=\"0.99\"} %.2f\n", prov, pp.P99)
+			}
+			buf.WriteString("\n")
+		}
 	}
 
 	if s.cache != nil {
