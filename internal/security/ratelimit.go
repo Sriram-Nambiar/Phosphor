@@ -103,20 +103,50 @@ func (crl *ClientRateLimiter) GetBucket(clientIdentifier string, limitRPM int) *
 	return tb
 }
 
-// GetClientIP extracts the real client IP address from proxy headers or remote addr.
+// GetClientIP extracts and validates the client IP address from proxy headers
+// (CF-Connecting-IP, True-Client-IP, X-Real-IP, X-Forwarded-For) or RemoteAddr.
 func GetClientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		return strings.TrimSpace(parts[0])
+	if cf := r.Header.Get("CF-Connecting-IP"); cf != "" {
+		if ip := cleanIP(cf); ip != "" {
+			return ip
+		}
+	}
+	if tci := r.Header.Get("True-Client-IP"); tci != "" {
+		if ip := cleanIP(tci); ip != "" {
+			return ip
+		}
 	}
 	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return strings.TrimSpace(xri)
+		if ip := cleanIP(xri); ip != "" {
+			return ip
+		}
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return host
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		for _, part := range strings.Split(xff, ",") {
+			if ip := cleanIP(part); ip != "" {
+				return ip
+			}
+		}
+	}
+	if ip := cleanIP(r.RemoteAddr); ip != "" {
+		return ip
 	}
 	return r.RemoteAddr
+}
+
+func cleanIP(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(s); err == nil {
+		s = host
+	}
+	s = strings.Trim(s, "[]")
+	if ip := net.ParseIP(s); ip != nil {
+		return ip.String()
+	}
+	return ""
 }
 
 // SetRateLimitHeaders sets standard rate limit headers on the response.

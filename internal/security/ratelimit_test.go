@@ -78,4 +78,34 @@ func TestGetClientIP(t *testing.T) {
 	if ip := GetClientIP(req3); ip != "192.0.2.1" {
 		t.Errorf("expected 192.0.2.1, got %s", ip)
 	}
+
+	// CF-Connecting-IP
+	req4 := httptest.NewRequest("GET", "/", nil)
+	req4.Header.Set("CF-Connecting-IP", "104.16.132.229")
+	req4.Header.Set("X-Forwarded-For", "203.0.113.1")
+	if ip := GetClientIP(req4); ip != "104.16.132.229" {
+		t.Errorf("expected CF-Connecting-IP priority 104.16.132.229, got %s", ip)
+	}
+
+	// True-Client-IP
+	req5 := httptest.NewRequest("GET", "/", nil)
+	req5.Header.Set("True-Client-IP", "198.51.100.55")
+	req5.Header.Set("X-Forwarded-For", "203.0.113.1")
+	if ip := GetClientIP(req5); ip != "198.51.100.55" {
+		t.Errorf("expected True-Client-IP priority 198.51.100.55, got %s", ip)
+	}
+
+	// IPv6 with port
+	req6 := httptest.NewRequest("GET", "/", nil)
+	req6.Header.Set("X-Forwarded-For", "[2001:db8::1]:8080, 192.0.2.1")
+	if ip := GetClientIP(req6); ip != "2001:db8::1" {
+		t.Errorf("expected 2001:db8::1, got %s", ip)
+	}
+
+	// Invalid XFF skips to valid second entry
+	req7 := httptest.NewRequest("GET", "/", nil)
+	req7.Header.Set("X-Forwarded-For", "unknown, 198.51.100.99")
+	if ip := GetClientIP(req7); ip != "198.51.100.99" {
+		t.Errorf("expected valid second entry 198.51.100.99, got %s", ip)
+	}
 }
