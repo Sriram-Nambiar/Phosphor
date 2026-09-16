@@ -437,4 +437,82 @@ func TestDB_ResponseCache(t *testing.T) {
 	}
 }
 
+func TestDB_ClientSpend(t *testing.T) {
+	d, err := New(":memory:")
+	if err != nil {
+		t.Fatalf("failed to init db: %v", err)
+	}
+	defer d.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// Insert requests for client-A and client-B
+	_ = d.LogRequestSync(ctx, &RequestLog{
+		ModelRequested: "gpt-4o",
+		Provider:       "openai",
+		ModelRouted:    "gpt-4o",
+		EstimatedCost:  0.05,
+		StatusCode:     200,
+		ClientName:     "client-A",
+		CreatedAt:      now.Add(-10 * time.Minute),
+	})
+
+	_ = d.LogRequestSync(ctx, &RequestLog{
+		ModelRequested: "gpt-4o",
+		Provider:       "openai",
+		ModelRouted:    "gpt-4o",
+		EstimatedCost:  0.03,
+		StatusCode:     200,
+		ClientName:     "client-A",
+		CreatedAt:      now.Add(-5 * time.Minute),
+	})
+
+	_ = d.LogRequestSync(ctx, &RequestLog{
+		ModelRequested: "claude-3-5-sonnet",
+		Provider:       "anthropic",
+		ModelRouted:    "claude-3-5-sonnet",
+		EstimatedCost:  0.10,
+		StatusCode:     200,
+		ClientName:     "client-B",
+		CreatedAt:      now.Add(-2 * time.Minute),
+	})
+
+	// Check spend for client-A in last hour
+	spendA, err := d.GetClientSpend(ctx, "client-A", now.Add(-1*time.Hour))
+	if err != nil {
+		t.Fatalf("unexpected error querying spendA: %v", err)
+	}
+	if spendA < 0.079 || spendA > 0.081 {
+		t.Errorf("expected spend ~0.08 for client-A, got %f", spendA)
+	}
+
+	// Check spend for client-A in last 7 minutes (should only include 0.03)
+	spendA_recent, err := d.GetClientSpend(ctx, "client-A", now.Add(-7*time.Minute))
+	if err != nil {
+		t.Fatalf("unexpected error querying spendA_recent: %v", err)
+	}
+	if spendA_recent < 0.029 || spendA_recent > 0.031 {
+		t.Errorf("expected spend ~0.03 for client-A recent, got %f", spendA_recent)
+	}
+
+	// Check spend for client-B
+	spendB, err := d.GetClientSpend(ctx, "client-B", now.Add(-1*time.Hour))
+	if err != nil {
+		t.Fatalf("unexpected error querying spendB: %v", err)
+	}
+	if spendB < 0.099 || spendB > 0.101 {
+		t.Errorf("expected spend ~0.10 for client-B, got %f", spendB)
+	}
+
+	// Non-existent client
+	spendC, err := d.GetClientSpend(ctx, "client-C", now.Add(-1*time.Hour))
+	if err != nil {
+		t.Fatalf("unexpected error querying spendC: %v", err)
+	}
+	if spendC != 0.0 {
+		t.Errorf("expected 0.0 for client-C, got %f", spendC)
+	}
+}
+
 

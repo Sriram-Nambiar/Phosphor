@@ -46,6 +46,7 @@ type RequestLog struct {
 	StatusCode       int       `json:"status_code"`
 	Stream           bool      `json:"stream"`
 	ErrorMsg         string    `json:"error_msg,omitempty"`
+	ClientName       string    `json:"client_name,omitempty"`
 }
 
 type FailoverTrace struct {
@@ -104,11 +105,13 @@ CREATE TABLE IF NOT EXISTS requests (
     ttft_ms REAL NOT NULL,
     status_code INTEGER NOT NULL,
     stream INTEGER NOT NULL,
-    error_msg TEXT
+    error_msg TEXT,
+    client_name TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at);
 CREATE INDEX IF NOT EXISTS idx_requests_provider ON requests(provider);
+CREATE INDEX IF NOT EXISTS idx_requests_client ON requests(client_name);
 
 CREATE TABLE IF NOT EXISTS failover_traces (
     id TEXT PRIMARY KEY,
@@ -315,8 +318,8 @@ func (d *DB) LogBatch(ctx context.Context, reqs []*RequestLog, failovers []*Fail
 INSERT INTO requests (
     id, created_at, model_requested, provider, model_routed,
     prompt_tokens, completion_tokens, total_tokens, estimated_cost,
-    latency_ms, ttft_ms, status_code, stream, error_msg
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    latency_ms, ttft_ms, status_code, stream, error_msg, client_name
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 `)
 		if err != nil {
 			return fmt.Errorf("failed to prepare batch requests stmt: %w", err)
@@ -349,6 +352,7 @@ INSERT INTO requests (
 				r.StatusCode,
 				streamInt,
 				r.ErrorMsg,
+				r.ClientName,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to insert batched request log: %w", err)
@@ -454,8 +458,8 @@ func (d *DB) LogRequestSync(ctx context.Context, r *RequestLog) error {
 INSERT INTO requests (
     id, created_at, model_requested, provider, model_routed,
     prompt_tokens, completion_tokens, total_tokens, estimated_cost,
-    latency_ms, ttft_ms, status_code, stream, error_msg
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    latency_ms, ttft_ms, status_code, stream, error_msg, client_name
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 `
 	streamInt := 0
 	if r.Stream {
@@ -477,6 +481,7 @@ INSERT INTO requests (
 		r.StatusCode,
 		streamInt,
 		r.ErrorMsg,
+		r.ClientName,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to insert request log: %w", err)
@@ -862,5 +867,20 @@ func (d *DB) PruneExpiredCache(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("failed to prune expired cache: %w", err)
 	}
 	return res.RowsAffected()
+}
+
+// GetClientSpend returns the total estimated cost for a given client since the specified time window.
+func (d *DB) GetClientSpend(ctx context.Context, clientName string, since time.Time) (float64, error) {
+	_ = d.Flush(ctx)
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var spend float64
+	query := `SELECT COALESCE(SUM(estimated_cost), 0.0) FROM requests WHERE client_name = ? AND created_at >= ?`
+	err := d.db.QueryRowContext(ctx, query, clientName, since.Format(time.RFC3339Nano)).Scan(&spend)
+	if err != nil {
+		return 0, fmt.Errorf("failed to query client spend: %w", err)
+	}
+	return spend, nil
 }
 
