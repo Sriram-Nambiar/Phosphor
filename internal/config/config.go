@@ -30,6 +30,7 @@ const (
 	ProviderTypeOllama    ProviderType = "ollama"
 	ProviderTypeGroq      ProviderType = "groq"
 	ProviderTypeGemini    ProviderType = "gemini"
+	ProviderTypeCohere    ProviderType = "cohere"
 )
 
 type Config struct {

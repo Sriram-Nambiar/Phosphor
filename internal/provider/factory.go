@@ -17,6 +17,8 @@ func NewProvider(cfg config.ProviderConfig) (Provider, error) {
 		return NewAnthropicProvider(cfg), nil
 	case config.ProviderTypeOllama:
 		return NewOllamaProvider(cfg), nil
+	case config.ProviderTypeCohere:
+		return NewCohereProvider(cfg), nil
 	default:
 		// Default to OpenAI-compatible if unrecognized
 		if cfg.BaseURL != "" {
