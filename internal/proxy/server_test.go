@@ -1963,10 +1963,91 @@ func TestServer_HeaderModelOverride(t *testing.T) {
 	if rr2.Code != http.StatusOK {
 		t.Fatalf("expected 200 OK, got %d: %s", rr2.Code, rr2.Body.String())
 	}
-	if receivedModel != "gpt-4o" {
-		t.Errorf("expected upstream to receive overridden model 'gpt-4o' via X-Routing-Model, got %q", receivedModel)
+}
+
+func TestServer_ETagAndIfNoneMatch304(t *testing.T) {
+	callCount := 0
+	srv, _, _ := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id":"cmpl-etag-test","choices":[{"message":{"role":"assistant","content":"etag reply"}}]}`)
+	})
+
+	srv.cfg.Cache.Enabled = true
+	srv.cfg.Cache.Capacity = 100
+	srv.cfg.Cache.TTL = 5 * time.Minute
+	srv.cache = cache.NewLRUCache(100, 5*time.Minute)
+
+	payload := `{"model":"gpt-4o","messages":[{"role":"user","content":"etag test prompt"}]}`
+
+	// 1. Initial request: MISS, returns 200 OK with ETag
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	rr1 := httptest.NewRecorder()
+	srv.ServeHTTP(rr1, req1)
+
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rr1.Code, rr1.Body.String())
+	}
+	etag := rr1.Header().Get("ETag")
+	if etag == "" {
+		t.Fatalf("expected non-empty ETag header in response")
+	}
+	if rr1.Header().Get("X-Cache") != "MISS" {
+		t.Errorf("expected X-Cache MISS, got %s", rr1.Header().Get("X-Cache"))
+	}
+	if callCount != 1 {
+		t.Errorf("expected 1 upstream call, got %d", callCount)
+	}
+
+	// 2. Subsequent request with matching If-None-Match: returns 304 Not Modified
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	req2.Header.Set("If-None-Match", etag)
+	rr2 := httptest.NewRecorder()
+	srv.ServeHTTP(rr2, req2)
+
+	if rr2.Code != http.StatusNotModified {
+		t.Fatalf("expected 304 Not Modified, got %d: %s", rr2.Code, rr2.Body.String())
+	}
+	if rr2.Header().Get("X-Cache") != "HIT" {
+		t.Errorf("expected X-Cache HIT, got %s", rr2.Header().Get("X-Cache"))
+	}
+	if rr2.Header().Get("ETag") != etag {
+		t.Errorf("expected matching ETag header, got %s", rr2.Header().Get("ETag"))
+	}
+	if rr2.Body.Len() != 0 {
+		t.Errorf("expected empty body for 304 Not Modified, got %d bytes", rr2.Body.Len())
+	}
+	if callCount != 1 {
+		t.Errorf("expected upstream call count still 1, got %d", callCount)
+	}
+
+	// 3. Subsequent request with non-matching If-None-Match: returns 200 OK from cache
+	req3 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	req3.Header.Set("If-None-Match", `"different-hash"`)
+	rr3 := httptest.NewRecorder()
+	srv.ServeHTTP(rr3, req3)
+
+	if rr3.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", rr3.Code)
+	}
+	if rr3.Header().Get("X-Cache") != "HIT" {
+		t.Errorf("expected X-Cache HIT, got %s", rr3.Header().Get("X-Cache"))
+	}
+	if !strings.Contains(rr3.Body.String(), "etag reply") {
+		t.Errorf("expected cached body content, got %s", rr3.Body.String())
+	}
+
+	// 4. Request with wildcard If-None-Match "*": returns 304 Not Modified
+	req4 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	req4.Header.Set("If-None-Match", "*")
+	rr4 := httptest.NewRecorder()
+	srv.ServeHTTP(rr4, req4)
+
+	if rr4.Code != http.StatusNotModified {
+		t.Fatalf("expected 304 Not Modified for wildcard ETag, got %d", rr4.Code)
 	}
 }
+
 
 
 

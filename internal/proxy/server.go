@@ -965,6 +965,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleNonStreamingCompletions(w http.ResponseWriter, r *http.Request, req *provider.ChatRequest, requestID string) {
 	ctx := r.Context()
 	cacheKey := cache.ComputeKey(req, "")
+	etag := `"` + cacheKey + `"`
 	bypassCache := strings.Contains(strings.ToLower(r.Header.Get("Cache-Control")), "no-cache")
 
 	correlationID := strings.TrimSpace(r.Header.Get("X-Correlation-ID"))
@@ -976,6 +977,13 @@ func (s *Server) handleNonStreamingCompletions(w http.ResponseWriter, r *http.Re
 	// 1. Check response cache if enabled and not bypassed via Cache-Control: no-cache
 	if s.cache != nil && !bypassCache {
 		if cachedBytes, hit := s.cache.Get(cacheKey); hit {
+			w.Header().Set("ETag", etag)
+			clientETag := strings.TrimSpace(r.Header.Get("If-None-Match"))
+			if clientETag != "" && (clientETag == "*" || clientETag == etag || strings.Trim(clientETag, `"`) == cacheKey) {
+				w.Header().Set("X-Cache", "HIT")
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("X-Cache", "HIT")
 			w.WriteHeader(http.StatusOK)
@@ -1089,6 +1097,7 @@ func (s *Server) handleNonStreamingCompletions(w http.ResponseWriter, r *http.Re
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("ETag", etag)
 	if shared {
 		w.Header().Set("X-Deduplicated", "true")
 		if s.cache != nil {
