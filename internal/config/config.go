@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -47,8 +48,10 @@ type Config struct {
 }
 
 type SecurityConfig struct {
-	EnablePromptGuard bool    `mapstructure:"enable_prompt_guard" yaml:"enable_prompt_guard"`
-	BlockThreshold    float64 `mapstructure:"block_threshold" yaml:"block_threshold"`
+	EnablePromptGuard bool     `mapstructure:"enable_prompt_guard" yaml:"enable_prompt_guard"`
+	BlockThreshold    float64  `mapstructure:"block_threshold" yaml:"block_threshold"`
+	AllowedIPs        []string `mapstructure:"allowed_ips,omitempty" yaml:"allowed_ips,omitempty"`
+	BlockedIPs        []string `mapstructure:"blocked_ips,omitempty" yaml:"blocked_ips,omitempty"`
 }
 
 type AuthConfig struct {
@@ -488,6 +491,25 @@ func (c *Config) Validate() error {
 	if c.Security.EnablePromptGuard {
 		if c.Security.BlockThreshold < 0 || c.Security.BlockThreshold > 1.0 {
 			errs = append(errs, "security.block_threshold must be between 0.0 and 1.0")
+		}
+	}
+
+	for _, ipStr := range c.Security.AllowedIPs {
+		s := strings.TrimSpace(ipStr)
+		if s == "" {
+			continue
+		}
+		if _, _, err := net.ParseCIDR(s); err != nil && net.ParseIP(s) == nil {
+			errs = append(errs, fmt.Sprintf("invalid IP or CIDR in security.allowed_ips: '%s'", ipStr))
+		}
+	}
+	for _, ipStr := range c.Security.BlockedIPs {
+		s := strings.TrimSpace(ipStr)
+		if s == "" {
+			continue
+		}
+		if _, _, err := net.ParseCIDR(s); err != nil && net.ParseIP(s) == nil {
+			errs = append(errs, fmt.Sprintf("invalid IP or CIDR in security.blocked_ips: '%s'", ipStr))
 		}
 	}
 

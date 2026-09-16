@@ -857,7 +857,7 @@ func (d *DB) GetLatencyPercentiles(ctx context.Context) (LatencyPercentiles, err
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	query := `SELECT latency_ms FROM requests WHERE latency_ms > 0 ORDER BY latency_ms ASC;`
+	query := `SELECT latency_ms FROM requests WHERE latency_ms >= 0 ORDER BY latency_ms ASC;`
 	rows, err := d.db.QueryContext(ctx, query)
 	if err != nil {
 		return LatencyPercentiles{}, fmt.Errorf("failed to query latencies: %w", err)
@@ -884,7 +884,7 @@ func (d *DB) GetProviderLatencyPercentiles(ctx context.Context) (map[string]Late
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	query := `SELECT provider, latency_ms FROM requests WHERE latency_ms > 0 ORDER BY provider, latency_ms ASC;`
+	query := `SELECT provider, latency_ms FROM requests WHERE latency_ms >= 0 ORDER BY provider, latency_ms ASC;`
 	rows, err := d.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query provider latencies: %w", err)

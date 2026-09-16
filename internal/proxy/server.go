@@ -67,12 +67,13 @@ func WithRequestID(ctx context.Context, id string) context.Context {
 }
 
 type Server struct {
-	cfg         *config.Config
-	router      *router.Router
-	database    *db.DB
-	cache       *cache.LRUCache
-	dedup       *cache.Deduplicator
+	cfg            *config.Config
+	router         *router.Router
+	database       *db.DB
+	cache          *cache.LRUCache
+	dedup          *cache.Deduplicator
 	detector       *security.PromptDetector
+	ipFilter       *security.IPFilter
 	securityBlocks atomic.Uint64
 	rateLimiter    *security.ClientRateLimiter
 	server         *http.Server
@@ -94,6 +95,13 @@ func NewServer(cfg *config.Config, r *router.Router, database *db.DB) *Server {
 		detector = security.NewPromptDetector(cfg.Security.BlockThreshold)
 	}
 
+	var ipFilter *security.IPFilter
+	if len(cfg.Security.AllowedIPs) > 0 || len(cfg.Security.BlockedIPs) > 0 {
+		if filter, err := security.NewIPFilter(cfg.Security.AllowedIPs, cfg.Security.BlockedIPs); err == nil {
+			ipFilter = filter
+		}
+	}
+
 	s := &Server{
 		cfg:         cfg,
 		router:      r,
@@ -101,12 +109,13 @@ func NewServer(cfg *config.Config, r *router.Router, database *db.DB) *Server {
 		cache:       c,
 		dedup:       cache.NewDeduplicator(),
 		detector:    detector,
+		ipFilter:    ipFilter,
 		rateLimiter: security.NewClientRateLimiter(0),
 		mux:         http.NewServeMux(),
 	}
 
 	s.routes()
-	s.handler = s.requestIDMiddleware(s.corsMiddleware(s.authMiddleware(s.rateLimitMiddleware(s.mux))))
+	s.handler = s.requestIDMiddleware(s.corsMiddleware(s.ipFilterMiddleware(s.authMiddleware(s.rateLimitMiddleware(s.mux)))))
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	s.server = &http.Server{
@@ -230,6 +239,22 @@ func matchOriginPattern(pattern, origin string) bool {
 	regexPattern := "^" + strings.ReplaceAll(escaped, `\*`, `.*`) + "$"
 	matched, _ := regexp.MatchString(regexPattern, origin)
 	return matched
+}
+
+func (s *Server) ipFilterMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.ipFilter != nil && s.ipFilter.HasRules() {
+			clientIP := security.GetClientIP(r)
+			if !s.ipFilter.IsAllowed(clientIP) {
+				s.securityBlocks.Add(1)
+				writeOpenAIError(w, http.StatusForbidden,
+					fmt.Sprintf("Access denied: IP %s is not permitted to access this gateway", clientIP),
+					"permission_denied", "ip_forbidden")
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) authMiddleware(next http.Handler) http.Handler {

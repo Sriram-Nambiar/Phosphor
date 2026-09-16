@@ -1860,6 +1860,68 @@ func TestServer_DegradedDatabaseMode(t *testing.T) {
 	}
 }
 
+func TestServer_IPFilterMiddleware(t *testing.T) {
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id":"cmpl-ip","choices":[{"message":{"role":"assistant","content":"ip ok"}}]}`)
+	})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	filter, err := security.NewIPFilter([]string{"10.0.0.0/8", "127.0.0.1"}, []string{"10.0.0.99"})
+	if err != nil {
+		t.Fatalf("failed to create ip filter: %v", err)
+	}
+	srv.ipFilter = filter
+
+	payload := `{"model":"gpt-4o","messages":[{"role":"user","content":"ip test"}]}`
+
+	// 1. Allowed IP (127.0.0.1)
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	req1.RemoteAddr = "127.0.0.1:54321"
+	rr1 := httptest.NewRecorder()
+	srv.ServeHTTP(rr1, req1)
+	if rr1.Code != http.StatusOK {
+		t.Errorf("expected 200 OK for 127.0.0.1, got %d: %s", rr1.Code, rr1.Body.String())
+	}
+
+	// 2. Allowed CIDR IP (10.1.2.3)
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	req2.RemoteAddr = "10.1.2.3:54321"
+	rr2 := httptest.NewRecorder()
+	srv.ServeHTTP(rr2, req2)
+	if rr2.Code != http.StatusOK {
+		t.Errorf("expected 200 OK for 10.1.2.3, got %d: %s", rr2.Code, rr2.Body.String())
+	}
+
+	// 3. Denylisted IP (10.0.0.99)
+	req3 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	req3.RemoteAddr = "10.0.0.99:54321"
+	rr3 := httptest.NewRecorder()
+	srv.ServeHTTP(rr3, req3)
+	if rr3.Code != http.StatusForbidden {
+		t.Errorf("expected 403 Forbidden for 10.0.0.99, got %d: %s", rr3.Code, rr3.Body.String())
+	}
+	if !strings.Contains(rr3.Body.String(), "ip_forbidden") {
+		t.Errorf("expected error code 'ip_forbidden', got: %s", rr3.Body.String())
+	}
+
+	// 4. Outside allowlist (192.168.1.5)
+	req4 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	req4.RemoteAddr = "192.168.1.5:54321"
+	rr4 := httptest.NewRecorder()
+	srv.ServeHTTP(rr4, req4)
+	if rr4.Code != http.StatusForbidden {
+		t.Errorf("expected 403 Forbidden for 192.168.1.5, got %d: %s", rr4.Code, rr4.Body.String())
+	}
+
+	// 5. Verify security blocks counter incremented
+	if srv.securityBlocks.Load() != 2 {
+		t.Errorf("expected 2 security blocks recorded, got %d", srv.securityBlocks.Load())
+	}
+}
+
+
 
 
 
