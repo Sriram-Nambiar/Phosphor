@@ -142,3 +142,65 @@ func TestRouter_WeightedRoundRobinStrategyIntegration(t *testing.T) {
 		t.Errorf("expected 20 picks for p1 and 10 for p2, got: %+v", picks)
 	}
 }
+
+func TestAtomicRoundRobin(t *testing.T) {
+	rr := NewRoundRobinScorer()
+
+	candidates := []CandidateTarget{
+		{ProviderName: "p1", Model: "m1"},
+		{ProviderName: "p2", Model: "m2"},
+		{ProviderName: "p3", Model: "m3"},
+	}
+
+	expectedFirst := []string{"p1", "p2", "p3", "p1", "p2", "p3"}
+	for i, expected := range expectedFirst {
+		ranked := rr.Rank(candidates, ScoringContext{})
+		if len(ranked) != 3 {
+			t.Fatalf("expected 3 candidates, got %d", len(ranked))
+		}
+		if ranked[0].ProviderName != expected {
+			t.Errorf("iteration %d: expected first candidate %s, got %s", i, expected, ranked[0].ProviderName)
+		}
+	}
+}
+
+func TestRouter_RoundRobinStrategyIntegration(t *testing.T) {
+	cfg := &config.Config{
+		Routing: config.RoutingConfig{DefaultStrategy: config.StrategyRoundRobin},
+		Providers: []config.ProviderConfig{
+			{Name: "p1", Type: config.ProviderTypeOpenAI, BaseURL: "http://localhost:8001", Enabled: true},
+			{Name: "p2", Type: config.ProviderTypeOpenAI, BaseURL: "http://localhost:8002", Enabled: true},
+		},
+		Models: map[string]config.ModelRule{
+			"gpt-rr": {
+				Strategy: config.StrategyRoundRobin,
+				Targets: []config.TargetModel{
+					{Provider: "p1", Model: "gpt-rr"},
+					{Provider: "p2", Model: "gpt-rr"},
+				},
+			},
+		},
+	}
+
+	r, err := NewRouter(cfg, nil)
+	if err != nil {
+		t.Fatalf("failed to create router: %v", err)
+	}
+
+	picks := make(map[string]int)
+	for i := 0; i < 40; i++ {
+		cands, strat, err := r.ResolveCandidates(&provider.ChatRequest{Model: "gpt-rr"})
+		if err != nil {
+			t.Fatalf("failed to resolve candidates: %v", err)
+		}
+		if strat != config.StrategyRoundRobin {
+			t.Errorf("expected strategy round-robin, got %s", strat)
+		}
+		picks[cands[0].ProviderName]++
+	}
+
+	if picks["p1"] != 20 || picks["p2"] != 20 {
+		t.Errorf("expected equal distribution (20/20), got %+v", picks)
+	}
+}
+

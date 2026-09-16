@@ -4,7 +4,35 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
+
+// RoundRobinScorer implements lock-free atomic round-robin candidate distribution.
+type RoundRobinScorer struct {
+	counter atomic.Uint64
+}
+
+// NewRoundRobinScorer initializes a lock-free atomic round-robin scorer.
+func NewRoundRobinScorer() *RoundRobinScorer {
+	return &RoundRobinScorer{}
+}
+
+// Rank orders candidates in a rotating circular sequence using an atomic counter.
+func (s *RoundRobinScorer) Rank(candidates []CandidateTarget, ctx ScoringContext) []CandidateTarget {
+	n := len(candidates)
+	if n <= 1 {
+		ranked := make([]CandidateTarget, n)
+		copy(ranked, candidates)
+		return ranked
+	}
+
+	idx := int(s.counter.Add(1)-1) % n
+	ranked := make([]CandidateTarget, n)
+	for i := 0; i < n; i++ {
+		ranked[i] = candidates[(idx+i)%n]
+	}
+	return ranked
+}
 
 // WeightedRoundRobinScorer implements the Nginx smooth weighted round-robin (SWRR) algorithm.
 // It evenly interleaves candidates across multiple requests based on assigned weights without clumping.

@@ -65,18 +65,19 @@ func (s *LowestLatencyScorer) Rank(candidates []CandidateTarget, ctx ScoringCont
 
 // DefaultScorerRegistry returns standard scorers for built-in strategies.
 func DefaultScorerRegistry() map[config.RoutingStrategy]CandidateScorer {
+	rr := NewRoundRobinScorer()
 	wrr := NewWeightedRoundRobinScorer()
 	composite := NewCompositeScorer(0.5, 0.5)
 	return map[config.RoutingStrategy]CandidateScorer{
 		config.StrategyPriority:           &PriorityScorer{},
 		config.StrategyLeastCost:          &LeastCostScorer{},
 		config.StrategyLowestLatency:      &LowestLatencyScorer{},
-		config.StrategyRoundRobin:         wrr,
+		config.StrategyRoundRobin:         rr,
 		config.StrategyWeightedRoundRobin: wrr,
 		config.StrategyComposite:          composite,
 		"balanced":                        composite,
 		"cost-latency":                    composite,
-		"round_robin":                     wrr,
+		"round_robin":                     rr,
 		"weighted_round_robin":            wrr,
 	}
 }
