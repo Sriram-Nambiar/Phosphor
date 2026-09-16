@@ -48,6 +48,8 @@ type RequestLog struct {
 	Stream           bool      `json:"stream"`
 	ErrorMsg         string    `json:"error_msg,omitempty"`
 	ClientName       string    `json:"client_name,omitempty"`
+	CorrelationID    string    `json:"correlation_id,omitempty"`
+	SessionID        string    `json:"session_id,omitempty"`
 }
 
 type FailoverTrace struct {
@@ -107,12 +109,15 @@ CREATE TABLE IF NOT EXISTS requests (
     status_code INTEGER NOT NULL,
     stream INTEGER NOT NULL,
     error_msg TEXT,
-    client_name TEXT NOT NULL DEFAULT ''
+    client_name TEXT NOT NULL DEFAULT '',
+    correlation_id TEXT NOT NULL DEFAULT '',
+    session_id TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_requests_created_at ON requests(created_at);
 CREATE INDEX IF NOT EXISTS idx_requests_provider ON requests(provider);
 CREATE INDEX IF NOT EXISTS idx_requests_client ON requests(client_name);
+CREATE INDEX IF NOT EXISTS idx_requests_correlation ON requests(correlation_id);
 
 CREATE TABLE IF NOT EXISTS failover_traces (
     id TEXT PRIMARY KEY,
@@ -186,6 +191,10 @@ func New(dbPath string) (*DB, error) {
 		sqlDB.Close()
 		return nil, fmt.Errorf("failed to apply database schema: %w", err)
 	}
+
+	_, _ = sqlDB.Exec("ALTER TABLE requests ADD COLUMN client_name TEXT NOT NULL DEFAULT '';")
+	_, _ = sqlDB.Exec("ALTER TABLE requests ADD COLUMN correlation_id TEXT NOT NULL DEFAULT '';")
+	_, _ = sqlDB.Exec("ALTER TABLE requests ADD COLUMN session_id TEXT NOT NULL DEFAULT '';")
 
 	d := &DB{
 		db:         sqlDB,
@@ -366,8 +375,9 @@ func (d *DB) LogBatch(ctx context.Context, reqs []*RequestLog, failovers []*Fail
 INSERT INTO requests (
     id, created_at, model_requested, provider, model_routed,
     prompt_tokens, completion_tokens, total_tokens, estimated_cost,
-    latency_ms, ttft_ms, status_code, stream, error_msg, client_name
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    latency_ms, ttft_ms, status_code, stream, error_msg, client_name,
+    correlation_id, session_id
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 `)
 		if err != nil {
 			return fmt.Errorf("failed to prepare batch requests stmt: %w", err)
@@ -401,6 +411,8 @@ INSERT INTO requests (
 				streamInt,
 				r.ErrorMsg,
 				r.ClientName,
+				r.CorrelationID,
+				r.SessionID,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to insert batched request log: %w", err)
@@ -506,8 +518,9 @@ func (d *DB) LogRequestSync(ctx context.Context, r *RequestLog) error {
 INSERT INTO requests (
     id, created_at, model_requested, provider, model_routed,
     prompt_tokens, completion_tokens, total_tokens, estimated_cost,
-    latency_ms, ttft_ms, status_code, stream, error_msg, client_name
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    latency_ms, ttft_ms, status_code, stream, error_msg, client_name,
+    correlation_id, session_id
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 `
 	streamInt := 0
 	if r.Stream {
@@ -530,6 +543,8 @@ INSERT INTO requests (
 		streamInt,
 		r.ErrorMsg,
 		r.ClientName,
+		r.CorrelationID,
+		r.SessionID,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to insert request log: %w", err)
@@ -761,7 +776,8 @@ func (d *DB) GetRecentRequests(ctx context.Context, limit int) ([]RequestLog, er
 SELECT 
     id, created_at, model_requested, provider, model_routed,
     prompt_tokens, completion_tokens, total_tokens, estimated_cost,
-    latency_ms, ttft_ms, status_code, stream, COALESCE(error_msg, '')
+    latency_ms, ttft_ms, status_code, stream, COALESCE(error_msg, ''),
+    COALESCE(client_name, ''), COALESCE(correlation_id, ''), COALESCE(session_id, '')
 FROM requests
 ORDER BY created_at DESC
 LIMIT ?;`
@@ -792,6 +808,9 @@ LIMIT ?;`
 			&r.StatusCode,
 			&streamInt,
 			&r.ErrorMsg,
+			&r.ClientName,
+			&r.CorrelationID,
+			&r.SessionID,
 		); err != nil {
 			return nil, err
 		}

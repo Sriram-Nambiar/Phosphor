@@ -770,6 +770,19 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	correlationID := strings.TrimSpace(r.Header.Get("X-Correlation-ID"))
+	if correlationID == "" {
+		correlationID = strings.TrimSpace(r.Header.Get("X-Trace-ID"))
+	}
+	sessionID := strings.TrimSpace(r.Header.Get("X-Session-ID"))
+
+	if correlationID != "" {
+		w.Header().Set("X-Correlation-ID", correlationID)
+	}
+	if sessionID != "" {
+		w.Header().Set("X-Session-ID", sessionID)
+	}
+
 	maxBytes := s.cfg.Server.MaxRequestBodyBytes
 	if maxBytes <= 0 {
 		maxBytes = 4 * 1024 * 1024
@@ -875,6 +888,12 @@ func (s *Server) handleNonStreamingCompletions(w http.ResponseWriter, r *http.Re
 	cacheKey := cache.ComputeKey(req, "")
 	bypassCache := strings.Contains(strings.ToLower(r.Header.Get("Cache-Control")), "no-cache")
 
+	correlationID := strings.TrimSpace(r.Header.Get("X-Correlation-ID"))
+	if correlationID == "" {
+		correlationID = strings.TrimSpace(r.Header.Get("X-Trace-ID"))
+	}
+	sessionID := strings.TrimSpace(r.Header.Get("X-Session-ID"))
+
 	// 1. Check response cache if enabled and not bypassed via Cache-Control: no-cache
 	if s.cache != nil && !bypassCache {
 		if cachedBytes, hit := s.cache.Get(cacheKey); hit {
@@ -909,6 +928,8 @@ func (s *Server) handleNonStreamingCompletions(w http.ResponseWriter, r *http.Re
 					LatencyMs:      latencyMs,
 					Stream:         false,
 					ErrorMsg:       security.RedactText(err.Error()),
+					CorrelationID:  correlationID,
+					SessionID:      sessionID,
 				})
 			}
 			return nil, err
@@ -946,6 +967,8 @@ func (s *Server) handleNonStreamingCompletions(w http.ResponseWriter, r *http.Re
 				StatusCode:       http.StatusOK,
 				Stream:           false,
 				ClientName:       clientName,
+				CorrelationID:    correlationID,
+				SessionID:        sessionID,
 			})
 		}
 
@@ -1006,6 +1029,12 @@ func (s *Server) handleStreamingCompletions(w http.ResponseWriter, r *http.Reque
 		writeOpenAIError(w, http.StatusInternalServerError, "Streaming unsupported by underlying transport", "api_error", "streaming_unsupported")
 		return
 	}
+
+	correlationID := strings.TrimSpace(r.Header.Get("X-Correlation-ID"))
+	if correlationID == "" {
+		correlationID = strings.TrimSpace(r.Header.Get("X-Trace-ID"))
+	}
+	sessionID := strings.TrimSpace(r.Header.Get("X-Session-ID"))
 
 	var cacheKey string
 	if s.cache != nil && !strings.Contains(strings.ToLower(r.Header.Get("Cache-Control")), "no-cache") {
@@ -1103,6 +1132,8 @@ func (s *Server) handleStreamingCompletions(w http.ResponseWriter, r *http.Reque
 				LatencyMs:      latencyMs,
 				Stream:         true,
 				ErrorMsg:       security.RedactText(err.Error()),
+				CorrelationID:  correlationID,
+				SessionID:      sessionID,
 			})
 		}
 
@@ -1333,6 +1364,8 @@ streamLoop:
 			Stream:           true,
 			ErrorMsg:         errorMsg,
 			ClientName:       clientName,
+			CorrelationID:    correlationID,
+			SessionID:        sessionID,
 		})
 	}
 }

@@ -571,4 +571,47 @@ func TestDB_VacuumAndFileSize(t *testing.T) {
 	}
 }
 
+func TestDB_CorrelationAndSessionIDs(t *testing.T) {
+	ctx := context.Background()
+	d, err := New(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	defer d.Close()
+
+	req := &RequestLog{
+		ModelRequested: "gpt-4o",
+		Provider:       "openai",
+		ModelRouted:    "gpt-4o",
+		PromptTokens:   20,
+		StatusCode:     200,
+		ClientName:     "corp-client",
+		CorrelationID:  "corr-987654321",
+		SessionID:      "sess-123456789",
+	}
+
+	if err := d.LogRequest(ctx, req); err != nil {
+		t.Fatalf("failed to log request: %v", err)
+	}
+	_ = d.Flush(ctx)
+
+	recent, err := d.GetRecentRequests(ctx, 5)
+	if err != nil {
+		t.Fatalf("failed to get recent requests: %v", err)
+	}
+	if len(recent) != 1 {
+		t.Fatalf("expected 1 recent request, got %d", len(recent))
+	}
+
+	if recent[0].CorrelationID != "corr-987654321" {
+		t.Errorf("expected CorrelationID 'corr-987654321', got %q", recent[0].CorrelationID)
+	}
+	if recent[0].SessionID != "sess-123456789" {
+		t.Errorf("expected SessionID 'sess-123456789', got %q", recent[0].SessionID)
+	}
+	if recent[0].ClientName != "corp-client" {
+		t.Errorf("expected ClientName 'corp-client', got %q", recent[0].ClientName)
+	}
+}
+
 

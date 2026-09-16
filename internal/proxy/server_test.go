@@ -1698,6 +1698,50 @@ func TestServer_CORSPatterns(t *testing.T) {
 	}
 }
 
+func TestServer_CorrelationAndSessionHeaders(t *testing.T) {
+	srv, dbInstance, mockUpstream := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id":"cmpl-meta","choices":[{"message":{"role":"assistant","content":"metadata response"}}]}`)
+	})
+	defer dbInstance.Close()
+	defer mockUpstream.Close()
+
+	payload := `{"model":"gpt-4o","messages":[{"role":"user","content":"Testing metadata headers"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload))
+	req.Header.Set("X-Correlation-ID", "corr-req-999")
+	req.Header.Set("X-Session-ID", "sess-client-444")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// 1. Verify headers echoed back in response
+	if rr.Header().Get("X-Correlation-ID") != "corr-req-999" {
+		t.Errorf("expected X-Correlation-ID corr-req-999, got %q", rr.Header().Get("X-Correlation-ID"))
+	}
+	if rr.Header().Get("X-Session-ID") != "sess-client-444" {
+		t.Errorf("expected X-Session-ID sess-client-444, got %q", rr.Header().Get("X-Session-ID"))
+	}
+
+	// 2. Verify database records
+	_ = dbInstance.Flush(context.Background())
+	recent, err := dbInstance.GetRecentRequests(context.Background(), 5)
+	if err != nil {
+		t.Fatalf("failed to query db logs: %v", err)
+	}
+	if len(recent) == 0 {
+		t.Fatal("expected at least 1 logged request")
+	}
+	if recent[0].CorrelationID != "corr-req-999" {
+		t.Errorf("expected logged CorrelationID corr-req-999, got %q", recent[0].CorrelationID)
+	}
+	if recent[0].SessionID != "sess-client-444" {
+		t.Errorf("expected logged SessionID sess-client-444, got %q", recent[0].SessionID)
+	}
+}
+
 
 
 
