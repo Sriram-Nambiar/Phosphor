@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1466,6 +1468,44 @@ func TestServer_AdminDBVacuum(t *testing.T) {
 		t.Errorf("expected 405 Method Not Allowed for GET /v1/admin/db/vacuum, got %d", rrGet.Code)
 	}
 }
+
+func TestServer_AdminDBBackup(t *testing.T) {
+	srv, _, _ := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	backupPath := filepath.Join(t.TempDir(), "backup_api_test.db")
+
+	// 1. Valid POST /v1/admin/db/backup
+	reqBody, _ := json.Marshal(AdminDBBackupRequest{Destination: backupPath})
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/db/backup", bytes.NewReader(reqBody))
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for POST /v1/admin/db/backup, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp AdminDBBackupResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.Status != "ok" || resp.Destination != backupPath {
+		t.Errorf("unexpected backup response: %+v", resp)
+	}
+	if _, err := os.Stat(backupPath); err != nil {
+		t.Errorf("expected backup file to exist at %s: %v", backupPath, err)
+	}
+
+	// 2. Invalid method GET /v1/admin/db/backup
+	reqGet := httptest.NewRequest(http.MethodGet, "/v1/admin/db/backup", nil)
+	rrGet := httptest.NewRecorder()
+	srv.ServeHTTP(rrGet, reqGet)
+	if rrGet.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 Method Not Allowed for GET /v1/admin/db/backup, got %d", rrGet.Code)
+	}
+}
+
 
 func TestServer_ModelAliasing(t *testing.T) {
 	var receivedModel string

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -138,6 +139,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/v1/admin/cache/stats", s.handleAdminCacheStats)
 	s.mux.HandleFunc("/v1/admin/cache/clear", s.handleAdminCacheClear)
 	s.mux.HandleFunc("/v1/admin/db/vacuum", s.handleAdminDBVacuum)
+	s.mux.HandleFunc("/v1/admin/db/backup", s.handleAdminDBBackup)
 	s.mux.HandleFunc("/openapi.json", s.handleOpenAPI)
 }
 
@@ -833,6 +835,55 @@ func (s *Server) handleAdminDBVacuum(w http.ResponseWriter, r *http.Request) {
 		SizeBytes: size,
 	})
 }
+
+type AdminDBBackupRequest struct {
+	Destination string `json:"destination"`
+}
+
+type AdminDBBackupResponse struct {
+	Status      string `json:"status"`
+	Destination string `json:"destination"`
+	SizeBytes   int64  `json:"size_bytes"`
+}
+
+func (s *Server) handleAdminDBBackup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "Method not allowed. Only POST is supported.", "invalid_request_error", "method_not_allowed")
+		return
+	}
+
+	if s.database == nil {
+		writeOpenAIError(w, http.StatusServiceUnavailable, "Database is not configured or disabled.", "database_error", "db_unavailable")
+		return
+	}
+
+	var req AdminDBBackupRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+	dest := strings.TrimSpace(req.Destination)
+	if dest == "" {
+		dest = fmt.Sprintf("phosphor_backup_%s.db", time.Now().UTC().Format("20060102_150405"))
+	}
+
+	if err := s.database.Backup(r.Context(), dest); err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to backup database: %v", err), "database_error", "backup_failed")
+		return
+	}
+
+	var size int64
+	if fi, err := os.Stat(dest); err == nil {
+		size = fi.Size()
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(AdminDBBackupResponse{
+		Status:      "ok",
+		Destination: dest,
+		SizeBytes:   size,
+	})
+}
+
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
