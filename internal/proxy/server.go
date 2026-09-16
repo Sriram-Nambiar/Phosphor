@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Sriram-Nambiar/Phosphor/internal/auth"
@@ -70,11 +71,12 @@ type Server struct {
 	database    *db.DB
 	cache       *cache.LRUCache
 	dedup       *cache.Deduplicator
-	detector    *security.PromptDetector
-	rateLimiter *security.ClientRateLimiter
-	server      *http.Server
-	mux         *http.ServeMux
-	handler     http.Handler
+	detector       *security.PromptDetector
+	securityBlocks atomic.Uint64
+	rateLimiter    *security.ClientRateLimiter
+	server         *http.Server
+	mux            *http.ServeMux
+	handler        http.Handler
 }
 
 func NewServer(cfg *config.Config, r *router.Router, database *db.DB) *Server {
@@ -465,6 +467,25 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if s.cache != nil {
+		hits, misses, size := s.cache.Stats()
+		buf.WriteString("# HELP phosphor_cache_hits_total Total response cache hits.\n")
+		buf.WriteString("# TYPE phosphor_cache_hits_total counter\n")
+		fmt.Fprintf(&buf, "phosphor_cache_hits_total %d\n\n", hits)
+
+		buf.WriteString("# HELP phosphor_cache_misses_total Total response cache misses.\n")
+		buf.WriteString("# TYPE phosphor_cache_misses_total counter\n")
+		fmt.Fprintf(&buf, "phosphor_cache_misses_total %d\n\n", misses)
+
+		buf.WriteString("# HELP phosphor_cache_entries Current entries in response cache.\n")
+		buf.WriteString("# TYPE phosphor_cache_entries gauge\n")
+		fmt.Fprintf(&buf, "phosphor_cache_entries %d\n\n", size)
+	}
+
+	buf.WriteString("# HELP phosphor_security_blocks_total Total requests blocked by security guardrails.\n")
+	buf.WriteString("# TYPE phosphor_security_blocks_total counter\n")
+	fmt.Fprintf(&buf, "phosphor_security_blocks_total %d\n\n", s.securityBlocks.Load())
+
 	_, _ = w.Write([]byte(buf.String()))
 }
 
@@ -745,6 +766,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Security-Risk", fmt.Sprintf("%.2f", scan.RiskScore))
 
 		if !scan.Safe {
+			s.securityBlocks.Add(1)
 			reason := "prompt injection pattern detected"
 			if len(scan.Matches) > 0 {
 				reason = scan.Matches[0].Description
