@@ -69,6 +69,16 @@ func WithRequestID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, RequestIDKey, id)
 }
 
+func sanitizeHeaderValue(val string, maxLen int) string {
+	val = strings.TrimSpace(val)
+	val = strings.ReplaceAll(val, "\r", "")
+	val = strings.ReplaceAll(val, "\n", "")
+	if maxLen > 0 && len(val) > maxLen {
+		val = val[:maxLen]
+	}
+	return val
+}
+
 type Server struct {
 	cfg            *config.Config
 	router         *router.Router
@@ -1044,11 +1054,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	correlationID := strings.TrimSpace(r.Header.Get("X-Correlation-ID"))
+	correlationID := sanitizeHeaderValue(r.Header.Get("X-Correlation-ID"), 128)
 	if correlationID == "" {
-		correlationID = strings.TrimSpace(r.Header.Get("X-Trace-ID"))
+		correlationID = sanitizeHeaderValue(r.Header.Get("X-Trace-ID"), 128)
 	}
-	sessionID := strings.TrimSpace(r.Header.Get("X-Session-ID"))
+	sessionID := sanitizeHeaderValue(r.Header.Get("X-Session-ID"), 128)
 
 	if correlationID != "" {
 		w.Header().Set("X-Correlation-ID", correlationID)

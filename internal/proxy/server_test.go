@@ -2362,6 +2362,44 @@ func TestServer_MissingModelRejected(t *testing.T) {
 	}
 }
 
+func TestServer_HeaderSanitizationAndClamping(t *testing.T) {
+	srv, _, _ := setupTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"id":"cmpl-hdr","choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+	})
+
+	longSession := strings.Repeat("s", 200) + "\r\n"
+	longCorrelation := strings.Repeat("c", 200) + "\n"
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Session-ID", longSession)
+	req.Header.Set("X-Correlation-ID", longCorrelation)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	resSession := rr.Header().Get("X-Session-ID")
+	if len(resSession) != 128 {
+		t.Errorf("expected clamped session ID of length 128, got length %d: %q", len(resSession), resSession)
+	}
+	if strings.Contains(resSession, "\r") || strings.Contains(resSession, "\n") {
+		t.Errorf("session ID contains carriage return or newline: %q", resSession)
+	}
+
+	resCorr := rr.Header().Get("X-Correlation-ID")
+	if len(resCorr) != 128 {
+		t.Errorf("expected clamped correlation ID of length 128, got length %d: %q", len(resCorr), resCorr)
+	}
+	if strings.Contains(resCorr, "\r") || strings.Contains(resCorr, "\n") {
+		t.Errorf("correlation ID contains carriage return or newline: %q", resCorr)
+	}
+}
+
 
 
 
