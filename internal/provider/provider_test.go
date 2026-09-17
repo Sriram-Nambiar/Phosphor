@@ -279,6 +279,28 @@ func TestOllamaProvider_SendAndStream(t *testing.T) {
 	}
 }
 
+func TestOllamaProvider_EndpointNormalization(t *testing.T) {
+	tests := []struct {
+		baseURL  string
+		expected string
+	}{
+		{"http://localhost:11434", "http://localhost:11434/api/chat"},
+		{"http://localhost:11434/", "http://localhost:11434/api/chat"},
+		{"http://localhost:11434/api", "http://localhost:11434/api/chat"},
+		{"http://localhost:11434/api/", "http://localhost:11434/api/chat"},
+		{"http://localhost:11434/api/chat", "http://localhost:11434/api/chat"},
+		{"", "http://localhost:11434/api/chat"},
+		{"   ", "http://localhost:11434/api/chat"},
+	}
+
+	for _, tt := range tests {
+		p := NewOllamaProvider(config.ProviderConfig{BaseURL: tt.baseURL})
+		if got := p.getEndpointURL(); got != tt.expected {
+			t.Errorf("baseURL %q: expected %q, got %q", tt.baseURL, tt.expected, got)
+		}
+	}
+}
+
 func TestFormatAndWriteSSEChunk(t *testing.T) {
 	chunk := StreamChunk{
 		ID:      "chatcmpl-test",

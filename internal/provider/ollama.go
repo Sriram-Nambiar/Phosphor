@@ -59,9 +59,15 @@ func (p *OllamaProvider) SupportsModel(model string) bool {
 }
 
 func (p *OllamaProvider) getEndpointURL() string {
-	baseURL := strings.TrimRight(p.cfg.BaseURL, "/")
+	baseURL := strings.TrimRight(strings.TrimSpace(p.cfg.BaseURL), "/")
+	if baseURL == "" {
+		baseURL = "http://localhost:11434"
+	}
 	if strings.HasSuffix(baseURL, "/api/chat") {
 		return baseURL
+	}
+	if strings.HasSuffix(baseURL, "/api") {
+		return baseURL + "/chat"
 	}
 	return baseURL + "/api/chat"
 }
