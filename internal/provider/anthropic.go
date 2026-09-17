@@ -107,16 +107,24 @@ func (p *AnthropicProvider) convertRequest(req *ChatRequest) *anthropicRequest {
 
 	for _, m := range req.Messages {
 		if strings.EqualFold(m.Role, "system") {
-			systemParts = append(systemParts, m.Content)
+			if strings.TrimSpace(m.Content) != "" {
+				systemParts = append(systemParts, m.Content)
+			}
 		} else {
-			role := strings.ToLower(m.Role)
+			role := strings.ToLower(strings.TrimSpace(m.Role))
 			if role != "user" && role != "assistant" {
 				role = "user"
 			}
-			msgs = append(msgs, anthropicMessage{
-				Role:    role,
-				Content: m.Content,
-			})
+			// Anthropic API requires alternating user/assistant turns.
+			// Merge consecutive messages with the same role.
+			if len(msgs) > 0 && msgs[len(msgs)-1].Role == role {
+				msgs[len(msgs)-1].Content += "\n\n" + m.Content
+			} else {
+				msgs = append(msgs, anthropicMessage{
+					Role:    role,
+					Content: m.Content,
+				})
+			}
 		}
 	}
 

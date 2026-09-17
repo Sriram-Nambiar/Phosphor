@@ -197,6 +197,35 @@ func TestAnthropicProvider_Send(t *testing.T) {
 	}
 }
 
+func TestAnthropicProvider_MessageMerging(t *testing.T) {
+	p := NewAnthropicProvider(config.ProviderConfig{Name: "test-anthropic"})
+	req := &ChatRequest{
+		Model: "claude-3-5-sonnet",
+		Messages: []ChatMessage{
+			{Role: "system", Content: "System rule 1."},
+			{Role: "system", Content: "System rule 2."},
+			{Role: "user", Content: "Hello,"},
+			{Role: "user", Content: "how are you?"},
+			{Role: "assistant", Content: "I am good."},
+			{Role: "user", Content: "Nice to hear."},
+		},
+	}
+
+	converted := p.convertRequest(req)
+	if converted.System != "System rule 1.\n\nSystem rule 2." {
+		t.Errorf("expected merged system prompts, got: %q", converted.System)
+	}
+	if len(converted.Messages) != 3 {
+		t.Fatalf("expected 3 alternating messages, got %d: %+v", len(converted.Messages), converted.Messages)
+	}
+	if converted.Messages[0].Content != "Hello,\n\nhow are you?" {
+		t.Errorf("expected merged user content, got: %q", converted.Messages[0].Content)
+	}
+	if converted.Messages[1].Role != "assistant" || converted.Messages[2].Role != "user" {
+		t.Errorf("expected alternating roles, got: %+v", converted.Messages)
+	}
+}
+
 func TestOllamaProvider_SendAndStream(t *testing.T) {
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
