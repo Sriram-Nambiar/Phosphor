@@ -24,6 +24,19 @@ func TestWindowStart(t *testing.T) {
 	if !total.IsZero() {
 		t.Errorf("expected zero time for total, got %v", total)
 	}
+
+	// 2026-09-16 is a Wednesday. Monday of that week is 2026-09-14.
+	weekly := WindowStart("weekly", now)
+	if weekly != time.Date(2026, 9, 14, 0, 0, 0, 0, time.UTC) {
+		t.Errorf("unexpected weekly start: %v", weekly)
+	}
+
+	if !IsValidPeriod("daily") || !IsValidPeriod("weekly") || !IsValidPeriod("monthly") || !IsValidPeriod("total") {
+		t.Error("expected daily, weekly, monthly, total to be valid periods")
+	}
+	if IsValidPeriod("hourly") || IsValidPeriod("yearly") {
+		t.Error("expected hourly, yearly to be invalid periods")
+	}
 }
 
 func TestEvaluate_Limits(t *testing.T) {

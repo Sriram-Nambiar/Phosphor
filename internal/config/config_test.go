@@ -312,3 +312,21 @@ func TestConfig_CompositeStrategyWeightsValidation(t *testing.T) {
 		t.Error("expected error when composite strategy has zero weights, got nil")
 	}
 }
+
+func TestConfig_BudgetResetPeriodValidation(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Auth.Enabled = true
+	cfg.Auth.Keys = []APIKeyConfig{
+		{
+			Key: "sk-test",
+			Budget: &BudgetConfig{
+				MaxSpend:    100,
+				ResetPeriod: "invalid_cycle",
+			},
+		},
+	}
+
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for invalid budget reset_period, got nil")
+	}
+}

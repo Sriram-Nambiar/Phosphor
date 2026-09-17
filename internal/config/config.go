@@ -441,6 +441,11 @@ func (c *Config) Validate() error {
 				if k.Budget.SoftLimit > k.Budget.MaxSpend && k.Budget.MaxSpend > 0 {
 					errs = append(errs, fmt.Sprintf("auth.keys[%d].budget.soft_limit cannot exceed max_spend", i))
 				}
+				switch strings.ToLower(strings.TrimSpace(k.Budget.ResetPeriod)) {
+				case "daily", "weekly", "monthly", "total", "":
+				default:
+					errs = append(errs, fmt.Sprintf("auth.keys[%d].budget.reset_period '%s' is invalid (must be daily, weekly, monthly, or total)", i, k.Budget.ResetPeriod))
+				}
 			}
 		}
 	}
