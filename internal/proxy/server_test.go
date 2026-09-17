@@ -2290,6 +2290,46 @@ func TestServer_EmptyMessagesRejected(t *testing.T) {
 	}
 }
 
+func TestServer_TemperatureAndTopPValidation(t *testing.T) {
+	srv, _, _ := setupTestServer(t, nil)
+
+	// Invalid temperature > 2.0
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o","temperature":2.5,"messages":[{"role":"user","content":"hi"}]}`))
+	req1.Header.Set("Content-Type", "application/json")
+	rr1 := httptest.NewRecorder()
+	srv.ServeHTTP(rr1, req1)
+	if rr1.Code != http.StatusBadRequest || !strings.Contains(rr1.Body.String(), "invalid_temperature") {
+		t.Fatalf("expected 400 invalid_temperature, got %d: %s", rr1.Code, rr1.Body.String())
+	}
+
+	// Invalid temperature < 0.0
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o","temperature":-0.1,"messages":[{"role":"user","content":"hi"}]}`))
+	req2.Header.Set("Content-Type", "application/json")
+	rr2 := httptest.NewRecorder()
+	srv.ServeHTTP(rr2, req2)
+	if rr2.Code != http.StatusBadRequest || !strings.Contains(rr2.Body.String(), "invalid_temperature") {
+		t.Fatalf("expected 400 invalid_temperature, got %d: %s", rr2.Code, rr2.Body.String())
+	}
+
+	// Invalid top_p > 1.0
+	req3 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o","top_p":1.5,"messages":[{"role":"user","content":"hi"}]}`))
+	req3.Header.Set("Content-Type", "application/json")
+	rr3 := httptest.NewRecorder()
+	srv.ServeHTTP(rr3, req3)
+	if rr3.Code != http.StatusBadRequest || !strings.Contains(rr3.Body.String(), "invalid_top_p") {
+		t.Fatalf("expected 400 invalid_top_p, got %d: %s", rr3.Code, rr3.Body.String())
+	}
+
+	// Invalid top_p < 0.0
+	req4 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o","top_p":-0.5,"messages":[{"role":"user","content":"hi"}]}`))
+	req4.Header.Set("Content-Type", "application/json")
+	rr4 := httptest.NewRecorder()
+	srv.ServeHTTP(rr4, req4)
+	if rr4.Code != http.StatusBadRequest || !strings.Contains(rr4.Body.String(), "invalid_top_p") {
+		t.Fatalf("expected 400 invalid_top_p, got %d: %s", rr4.Code, rr4.Body.String())
+	}
+}
+
 
 
 

@@ -1090,6 +1090,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if chatReq.Temperature != nil && (*chatReq.Temperature < 0.0 || *chatReq.Temperature > 2.0) {
+		writeOpenAIError(w, http.StatusBadRequest, "temperature must be between 0.0 and 2.0", "invalid_request_error", "invalid_temperature")
+		return
+	}
+
+	if chatReq.TopP != nil && (*chatReq.TopP < 0.0 || *chatReq.TopP > 1.0) {
+		writeOpenAIError(w, http.StatusBadRequest, "top_p must be between 0.0 and 1.0", "invalid_request_error", "invalid_top_p")
+		return
+	}
+
 	if s.cfg.Security.MaxPromptChars > 0 || s.cfg.Security.MaxPromptTokens > 0 {
 		totalChars := 0
 		for _, m := range chatReq.Messages {
