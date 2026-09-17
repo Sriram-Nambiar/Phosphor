@@ -289,9 +289,18 @@ func (d *DB) Backup(ctx context.Context, destPath string) error {
 	if d == nil || d.db == nil {
 		return errors.New("database not initialized")
 	}
+	if d.closed.Load() {
+		return errors.New("database is closed")
+	}
 	destPath = strings.TrimSpace(destPath)
 	if destPath == "" {
 		return errors.New("destination path cannot be empty")
+	}
+
+	if strings.HasPrefix(destPath, "~/") || strings.HasPrefix(destPath, "~\\") {
+		if home, err := os.UserHomeDir(); err == nil {
+			destPath = filepath.Join(home, destPath[2:])
+		}
 	}
 
 	// Flush pending writes first to ensure all records are committed

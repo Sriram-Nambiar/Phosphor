@@ -919,6 +919,16 @@ func TestDB_Backup(t *testing.T) {
 	if len(memLogs) != 1 || memLogs[0].ID != "mem-backup-1" {
 		t.Fatalf("expected 1 log with ID 'mem-backup-1' in memory backup, got %+v", memLogs)
 	}
+
+	// 5. Backup on closed DB
+	closedDB, err := New(":memory:")
+	if err != nil {
+		t.Fatalf("failed to create memory db: %v", err)
+	}
+	_ = closedDB.Close()
+	if err := closedDB.Backup(ctx, filepath.Join(tmpDir, "closed_backup.db")); err == nil {
+		t.Error("expected error when backing up closed db, got nil")
+	}
 }
 
 func TestDB_CloseIdempotent(t *testing.T) {
