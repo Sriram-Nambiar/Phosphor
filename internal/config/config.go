@@ -474,6 +474,9 @@ func (c *Config) Validate() error {
 	if c.Routing.MaxBackoffMs < 0 {
 		errs = append(errs, "routing.max_backoff_ms cannot be negative")
 	}
+	if c.Routing.InitialBackoffMs > c.Routing.MaxBackoffMs && c.Routing.MaxBackoffMs > 0 {
+		errs = append(errs, "routing.initial_backoff_ms cannot exceed routing.max_backoff_ms")
+	}
 	if c.Routing.RetryBudgetRatio < 0 || c.Routing.RetryBudgetRatio > 1.0 {
 		errs = append(errs, "routing.retry_budget_ratio must be between 0.0 and 1.0")
 	}

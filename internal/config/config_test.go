@@ -290,3 +290,14 @@ func TestConfig_TimeoutValidation(t *testing.T) {
 		t.Error("expected error for negative provider.timeout_seconds, got nil")
 	}
 }
+
+func TestConfig_BackoffValidation(t *testing.T) {
+	cfg := DefaultConfig()
+
+	// Initial backoff greater than max backoff
+	cfg.Routing.InitialBackoffMs = 5000
+	cfg.Routing.MaxBackoffMs = 1000
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error when initial_backoff_ms exceeds max_backoff_ms, got nil")
+	}
+}
