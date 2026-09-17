@@ -1128,6 +1128,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		chatReq.Model = headerModel
 	}
 
+	if strings.TrimSpace(requestedModel) == "" {
+		writeOpenAIError(w, http.StatusBadRequest, "model is a required field", "invalid_request_error", "missing_model")
+		return
+	}
+
 	canonicalModel := s.cfg.ResolveModelAlias(requestedModel)
 	w.Header().Set("X-Phosphor-Model", canonicalModel)
 

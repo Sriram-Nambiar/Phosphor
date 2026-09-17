@@ -2330,6 +2330,38 @@ func TestServer_TemperatureAndTopPValidation(t *testing.T) {
 	}
 }
 
+func TestServer_MissingModelRejected(t *testing.T) {
+	srv, _, _ := setupTestServer(t, nil)
+
+	// Missing model in JSON
+	reqBody := `{"messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for missing model, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "missing_model") {
+		t.Errorf("expected missing_model error code, got %s", rr.Body.String())
+	}
+
+	// Model is empty whitespace
+	reqBody2 := `{"model":"   ","messages":[{"role":"user","content":"hi"}]}`
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqBody2))
+	req2.Header.Set("Content-Type", "application/json")
+	rr2 := httptest.NewRecorder()
+	srv.ServeHTTP(rr2, req2)
+
+	if rr2.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for whitespace model, got %d", rr2.Code)
+	}
+	if !strings.Contains(rr2.Body.String(), "missing_model") {
+		t.Errorf("expected missing_model error code, got %s", rr2.Body.String())
+	}
+}
+
 
 
 
