@@ -1080,6 +1080,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(chatReq.Messages) == 0 {
+		writeOpenAIError(w, http.StatusBadRequest, "messages is a required field and must not be empty", "invalid_request_error", "invalid_messages")
+		return
+	}
+
 	if chatReq.MaxTokens != nil && *chatReq.MaxTokens < 0 {
 		writeOpenAIError(w, http.StatusBadRequest, "max_tokens must be greater than or equal to 0", "invalid_request_error", "invalid_max_tokens")
 		return

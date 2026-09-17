@@ -2273,6 +2273,23 @@ func TestServer_ModelByID(t *testing.T) {
 	}
 }
 
+func TestServer_EmptyMessagesRejected(t *testing.T) {
+	srv, _, _ := setupTestServer(t, nil)
+
+	reqBody := `{"model":"gpt-4o","messages":[]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for empty messages, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "invalid_messages") {
+		t.Errorf("expected invalid_messages in response, got: %s", rr.Body.String())
+	}
+}
+
 
 
 
