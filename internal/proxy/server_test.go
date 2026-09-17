@@ -2218,6 +2218,14 @@ func TestServer_Health_MethodNotAllowed(t *testing.T) {
 		t.Fatalf("expected 200 OK on GET /health, got %d", rrGet.Code)
 	}
 
+	var healthRes map[string]any
+	if err := json.Unmarshal(rrGet.Body.Bytes(), &healthRes); err != nil {
+		t.Fatalf("failed to decode health response: %v", err)
+	}
+	if _, ok := healthRes["uptime_seconds"]; !ok {
+		t.Errorf("expected uptime_seconds in health response, got: %v", healthRes)
+	}
+
 	// POST should be rejected with 405 Method Not Allowed
 	reqPost := httptest.NewRequest(http.MethodPost, "/health", strings.NewReader(`{}`))
 	rrPost := httptest.NewRecorder()

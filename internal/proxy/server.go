@@ -82,6 +82,7 @@ type Server struct {
 	server         *http.Server
 	mux            *http.ServeMux
 	handler        http.Handler
+	startTime      time.Time
 }
 
 func NewServer(cfg *config.Config, r *router.Router, database *db.DB) *Server {
@@ -115,6 +116,7 @@ func NewServer(cfg *config.Config, r *router.Router, database *db.DB) *Server {
 		ipFilter:    ipFilter,
 		rateLimiter: security.NewClientRateLimiter(0),
 		mux:         http.NewServeMux(),
+		startTime:   time.Now().UTC(),
 	}
 
 	s.routes()
@@ -443,10 +445,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if s.database != nil && s.database.IsDegraded() {
 		status = "degraded"
 	}
+	uptime := int64(time.Since(s.startTime).Seconds())
+	if uptime < 0 {
+		uptime = 0
+	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":    status,
-		"service":   "phosphor",
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"status":         status,
+		"service":        "phosphor",
+		"timestamp":      time.Now().UTC().Format(time.RFC3339),
+		"uptime_seconds": uptime,
 	})
 }
 
