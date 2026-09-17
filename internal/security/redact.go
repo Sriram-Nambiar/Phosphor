@@ -83,9 +83,13 @@ func RedactAPIKey(key string) string {
 	if key == "" {
 		return ""
 	}
-	if len(key) <= 8 {
+	if strings.HasPrefix(key, "${") && strings.HasSuffix(key, "}") {
+		return key
+	}
+	runes := []rune(key)
+	if len(runes) <= 8 {
 		return "[REDACTED]"
 	}
-	return key[:4] + "..." + key[len(key)-4:]
+	return string(runes[:4]) + "..." + string(runes[len(runes)-4:])
 }
 

@@ -100,3 +100,26 @@ func TestRedactHeaders(t *testing.T) {
 		t.Errorf("expected Content-Type to be preserved, got %v", sanitized["Content-Type"])
 	}
 }
+
+func TestRedactAPIKey(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"", ""},
+		{"   ", ""},
+		{"short", "[REDACTED]"},
+		{"12345678", "[REDACTED]"},
+		{"123456789", "1234...6789"},
+		{"sk-proj-1234567890abcdef", "sk-p...cdef"},
+		{"${OPENAI_API_KEY}", "${OPENAI_API_KEY}"},
+		{"🔑🔐🗝️secretkey123", "🔑🔐🗝️...y123"},
+	}
+
+	for _, tt := range tests {
+		got := RedactAPIKey(tt.input)
+		if got != tt.expected {
+			t.Errorf("RedactAPIKey(%q) = %q, expected %q", tt.input, got, tt.expected)
+		}
+	}
+}
