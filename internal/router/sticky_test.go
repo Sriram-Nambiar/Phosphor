@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/Sriram-Nambiar/Phosphor/internal/config"
@@ -32,6 +33,17 @@ func TestConsistentHash(t *testing.T) {
 	}
 	if idx := ConsistentHash("anything", 0); idx != 0 {
 		t.Errorf("expected 0 for n=0, got %d", idx)
+	}
+	if idx := ConsistentHash("", 5); idx != 0 {
+		t.Errorf("expected 0 for empty key, got %d", idx)
+	}
+
+	// 4. Ensure non-negative under wide variety of strings
+	for i := 0; i < 500; i++ {
+		idx := ConsistentHash(fmt.Sprintf("complex-key-session-%d-%x", i, i*999999), 7)
+		if idx < 0 || idx >= 7 {
+			t.Fatalf("index %d out of bounds [0, 7)", idx)
+		}
 	}
 }
 

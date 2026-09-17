@@ -6,12 +6,12 @@ import (
 
 // ConsistentHash maps a key string to an index in [0, n) using 32-bit FNV-1a.
 func ConsistentHash(key string, n int) int {
-	if n <= 1 {
+	if n <= 1 || key == "" {
 		return 0
 	}
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(key))
-	return int(h.Sum32()) % n
+	return int(h.Sum32() % uint32(n))
 }
 
 // StickySessionScorer ranks candidates deterministically based on session ID consistent hashing.
