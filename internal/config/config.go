@@ -462,6 +462,9 @@ func (c *Config) Validate() error {
 	if c.Routing.LatencyWeight < 0 {
 		errs = append(errs, "routing.latency_weight cannot be negative")
 	}
+	if c.Routing.TimeoutSeconds < 0 {
+		errs = append(errs, "routing.timeout_seconds cannot be negative")
+	}
 	if c.Routing.MaxRetries < 0 {
 		errs = append(errs, "routing.max_retries cannot be negative")
 	}
@@ -550,6 +553,9 @@ func (c *Config) Validate() error {
 			}
 			if p.MaxConcurrency < 0 {
 				errs = append(errs, fmt.Sprintf("providers[%s].max_concurrency cannot be negative", p.Name))
+			}
+			if p.TimeoutSeconds < 0 {
+				errs = append(errs, fmt.Sprintf("providers[%s].timeout_seconds cannot be negative", p.Name))
 			}
 		}
 	}

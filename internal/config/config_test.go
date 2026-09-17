@@ -273,3 +273,20 @@ func TestConfig_ExpandEnvWithDefaults(t *testing.T) {
 		}
 	}
 }
+
+func TestConfig_TimeoutValidation(t *testing.T) {
+	cfg := DefaultConfig()
+
+	// Negative routing timeout
+	cfg.Routing.TimeoutSeconds = -5
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for negative routing.timeout_seconds, got nil")
+	}
+	cfg.Routing.TimeoutSeconds = 30
+
+	// Negative provider timeout
+	cfg.Providers[0].TimeoutSeconds = -10
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for negative provider.timeout_seconds, got nil")
+	}
+}
