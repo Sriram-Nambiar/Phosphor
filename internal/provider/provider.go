@@ -94,6 +94,40 @@ func (r *ChatRequest) RequiresVision() bool {
 	return false
 }
 
+// Validate performs semantic checks on ChatRequest fields and messages.
+func (r *ChatRequest) Validate() error {
+	if r == nil {
+		return errors.New("chat request cannot be nil")
+	}
+	if strings.TrimSpace(r.Model) == "" {
+		return errors.New("model is required")
+	}
+	if len(r.Messages) == 0 {
+		return errors.New("messages must not be empty")
+	}
+	for i, m := range r.Messages {
+		role := strings.ToLower(strings.TrimSpace(m.Role))
+		if role == "" {
+			return fmt.Errorf("message %d has empty role", i)
+		}
+		switch role {
+		case "system", "user", "assistant", "tool", "function":
+		default:
+			return fmt.Errorf("message %d has invalid role %q", i, m.Role)
+		}
+	}
+	if r.MaxTokens != nil && *r.MaxTokens < 0 {
+		return errors.New("max_tokens must be greater than or equal to 0")
+	}
+	if r.Temperature != nil && (*r.Temperature < 0.0 || *r.Temperature > 2.0) {
+		return errors.New("temperature must be between 0.0 and 2.0")
+	}
+	if r.TopP != nil && (*r.TopP < 0.0 || *r.TopP > 1.0) {
+		return errors.New("top_p must be between 0.0 and 1.0")
+	}
+	return nil
+}
+
 type ChatChoice struct {
 	Index        int         `json:"index"`
 	Message      ChatMessage `json:"message"`

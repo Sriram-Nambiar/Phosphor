@@ -523,4 +523,57 @@ func TestExtractRetryAfter(t *testing.T) {
 	}
 }
 
+func TestChatRequest_Validate(t *testing.T) {
+	// 1. Nil request
+	var nilReq *ChatRequest
+	if err := nilReq.Validate(); err == nil {
+		t.Fatal("expected error for nil request")
+	}
+
+	// 2. Missing model
+	reqNoModel := &ChatRequest{
+		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+	}
+	if err := reqNoModel.Validate(); err == nil || !strings.Contains(err.Error(), "model is required") {
+		t.Fatalf("expected missing model error, got %v", err)
+	}
+
+	// 3. Empty messages
+	reqNoMsgs := &ChatRequest{
+		Model:    "gpt-4o",
+		Messages: []ChatMessage{},
+	}
+	if err := reqNoMsgs.Validate(); err == nil || !strings.Contains(err.Error(), "messages must not be empty") {
+		t.Fatalf("expected empty messages error, got %v", err)
+	}
+
+	// 4. Invalid role
+	reqBadRole := &ChatRequest{
+		Model:    "gpt-4o",
+		Messages: []ChatMessage{{Role: "moderator", Content: "hi"}},
+	}
+	if err := reqBadRole.Validate(); err == nil || !strings.Contains(err.Error(), "invalid role") {
+		t.Fatalf("expected invalid role error, got %v", err)
+	}
+
+	// 5. Valid request
+	maxTok := 100
+	temp := 0.7
+	topP := 0.9
+	reqValid := &ChatRequest{
+		Model: "gpt-4o",
+		Messages: []ChatMessage{
+			{Role: "system", Content: "System prompt"},
+			{Role: "user", Content: "User question"},
+			{Role: "assistant", Content: "Assistant answer"},
+		},
+		MaxTokens:   &maxTok,
+		Temperature: &temp,
+		TopP:        &topP,
+	}
+	if err := reqValid.Validate(); err != nil {
+		t.Fatalf("expected valid request to pass validation, got: %v", err)
+	}
+}
+
 
