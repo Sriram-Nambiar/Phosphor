@@ -301,3 +301,14 @@ func TestConfig_BackoffValidation(t *testing.T) {
 		t.Error("expected error when initial_backoff_ms exceeds max_backoff_ms, got nil")
 	}
 }
+
+func TestConfig_CompositeStrategyWeightsValidation(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Routing.DefaultStrategy = StrategyComposite
+	cfg.Routing.CostWeight = 0
+	cfg.Routing.LatencyWeight = 0
+
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error when composite strategy has zero weights, got nil")
+	}
+}

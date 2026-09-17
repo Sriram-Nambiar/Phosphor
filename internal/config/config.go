@@ -462,6 +462,9 @@ func (c *Config) Validate() error {
 	if c.Routing.LatencyWeight < 0 {
 		errs = append(errs, "routing.latency_weight cannot be negative")
 	}
+	if (c.Routing.DefaultStrategy == StrategyComposite || c.Routing.DefaultStrategy == "balanced" || c.Routing.DefaultStrategy == "cost-latency") && c.Routing.CostWeight <= 0 && c.Routing.LatencyWeight <= 0 {
+		errs = append(errs, "at least one of routing.cost_weight or routing.latency_weight must be positive for composite strategy")
+	}
 	if c.Routing.TimeoutSeconds < 0 {
 		errs = append(errs, "routing.timeout_seconds cannot be negative")
 	}
