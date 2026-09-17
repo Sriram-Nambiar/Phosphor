@@ -78,6 +78,16 @@ func TestCostEstimation(t *testing.T) {
 	if cost != expectedCost {
 		t.Errorf("expected %f, got %f", expectedCost, cost)
 	}
+
+	// Negative tokens must be clamped to zero and not produce negative costs
+	negCost := CalculateCost(-100, -50, costCfg)
+	if negCost != 0.0 {
+		t.Errorf("expected 0.0 for negative tokens, got %f", negCost)
+	}
+	negEst := EstimateRequestCost(-10, costCfg)
+	if negEst != 0.0 {
+		t.Errorf("expected 0.0 for negative estimated tokens, got %f", negEst)
+	}
 }
 
 func TestRouter_StrategySorting(t *testing.T) {

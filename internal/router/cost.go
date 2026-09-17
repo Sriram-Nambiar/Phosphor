@@ -28,6 +28,12 @@ func EstimatePromptTokens(req *provider.ChatRequest) int {
 
 // CalculateCost computes dollar cost based on prompt and completion token counts and cost rates per 1M tokens.
 func CalculateCost(promptTokens, completionTokens int, costCfg config.CostConfig) float64 {
+	if promptTokens < 0 {
+		promptTokens = 0
+	}
+	if completionTokens < 0 {
+		completionTokens = 0
+	}
 	promptCost := (float64(promptTokens) / 1_000_000.0) * costCfg.PromptCostPer1M
 	completionCost := (float64(completionTokens) / 1_000_000.0) * costCfg.CompletionCostPer1M
 	return promptCost + completionCost
@@ -35,6 +41,9 @@ func CalculateCost(promptTokens, completionTokens int, costCfg config.CostConfig
 
 // EstimateRequestCost estimates the dollar cost for a request based on prompt token count.
 func EstimateRequestCost(estimatedPromptTokens int, costCfg config.CostConfig) float64 {
+	if estimatedPromptTokens < 0 {
+		estimatedPromptTokens = 0
+	}
 	// Assume an average completion of ~50% prompt tokens for estimation purposes
 	estCompletion := estimatedPromptTokens / 2
 	return CalculateCost(estimatedPromptTokens, estCompletion, costCfg)
