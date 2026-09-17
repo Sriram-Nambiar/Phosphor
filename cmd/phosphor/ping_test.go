@@ -85,6 +85,29 @@ func TestPingCommand_Unreachable(t *testing.T) {
 	}
 }
 
+func TestPingCommand_TimeoutFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ready"}`))
+	}))
+	defer srv.Close()
+
+	pingURL = srv.URL
+	pingCount = 1
+	pingTimeout = -1 * time.Second // Should fall back to 2s
+	pingInterval = -1 * time.Second // Should fall back to 0
+	defer func() {
+		pingURL = ""
+		pingCount = 1
+		pingTimeout = 2 * time.Second
+		pingInterval = 1 * time.Second
+	}()
+
+	if err := runPing(nil, nil); err != nil {
+		t.Fatalf("expected runPing with negative timeout to succeed with fallback: %v", err)
+	}
+}
+
 func TestPingCommand_ComputeSummary(t *testing.T) {
 	results := []PingResult{
 		{Seq: 1, StatusCode: 200, LatencyMs: 10.0},

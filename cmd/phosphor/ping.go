@@ -87,9 +87,20 @@ func runPing(cmd *cobra.Command, args []string) error {
 	if pingCount <= 0 {
 		pingCount = 1
 	}
+	if pingTimeout <= 0 {
+		pingTimeout = 2 * time.Second
+	}
+	if pingInterval < 0 {
+		pingInterval = 0
+	}
 
 	client := &http.Client{
 		Timeout: pingTimeout,
+	}
+
+	cmdCtx := context.Background()
+	if cmd != nil {
+		cmdCtx = cmd.Context()
 	}
 
 	var results []PingResult
@@ -102,7 +113,7 @@ func runPing(cmd *cobra.Command, args []string) error {
 	}
 
 	for seq := 1; seq <= pingCount; seq++ {
-		result := doSinglePing(client, endpoint, seq)
+		result := doSinglePing(cmdCtx, client, endpoint, seq)
 		results = append(results, result)
 
 		if result.StatusCode == http.StatusOK {
@@ -134,8 +145,11 @@ func runPing(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func doSinglePing(client *http.Client, endpoint string, seq int) PingResult {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, endpoint, nil)
+func doSinglePing(ctx context.Context, client *http.Client, endpoint string, seq int) PingResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return PingResult{
 			Seq:   seq,
