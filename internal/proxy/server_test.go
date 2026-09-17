@@ -2235,6 +2235,44 @@ func TestServer_Health_MethodNotAllowed(t *testing.T) {
 	}
 }
 
+func TestServer_ModelByID(t *testing.T) {
+	srv, _, _ := setupTestServer(t, nil)
+
+	// Valid model lookup
+	reqValid := httptest.NewRequest(http.MethodGet, "/v1/models/gpt-4o", nil)
+	rrValid := httptest.NewRecorder()
+	srv.ServeHTTP(rrValid, reqValid)
+	if rrValid.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for /v1/models/gpt-4o, got %d: %s", rrValid.Code, rrValid.Body.String())
+	}
+	var model ModelInfo
+	if err := json.Unmarshal(rrValid.Body.Bytes(), &model); err != nil {
+		t.Fatalf("failed to decode model info: %v", err)
+	}
+	if model.ID != "gpt-4o" || model.Object != "model" {
+		t.Errorf("unexpected model payload: %+v", model)
+	}
+
+	// Non-existent model lookup -> 404
+	reqInvalid := httptest.NewRequest(http.MethodGet, "/v1/models/non-existent-model", nil)
+	rrInvalid := httptest.NewRecorder()
+	srv.ServeHTTP(rrInvalid, reqInvalid)
+	if rrInvalid.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 Not Found for missing model, got %d", rrInvalid.Code)
+	}
+	if !strings.Contains(rrInvalid.Body.String(), "model_not_found") {
+		t.Errorf("expected model_not_found error code, got %s", rrInvalid.Body.String())
+	}
+
+	// Non-GET method -> 405
+	reqPost := httptest.NewRequest(http.MethodPost, "/v1/models/gpt-4o", nil)
+	rrPost := httptest.NewRecorder()
+	srv.ServeHTTP(rrPost, reqPost)
+	if rrPost.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405 Method Not Allowed, got %d", rrPost.Code)
+	}
+}
+
 
 
 

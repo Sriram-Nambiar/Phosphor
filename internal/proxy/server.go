@@ -138,6 +138,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/ready", s.handleReady)
 	s.mux.HandleFunc("/metrics", s.handleMetrics)
 	s.mux.HandleFunc("/v1/models", s.handleModels)
+	s.mux.HandleFunc("/v1/models/", s.handleModelByID)
 	s.mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
 	s.mux.HandleFunc("/v1/admin/budgets", s.handleAdminBudgets)
 	s.mux.HandleFunc("/v1/admin/cache/stats", s.handleAdminCacheStats)
@@ -750,6 +751,64 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(ModelListResponse{
 		Object: "list",
 		Data:   models,
+	})
+}
+
+func (s *Server) handleModelByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "Method not allowed. Only GET is supported.", "invalid_request_error", "method_not_allowed")
+		return
+	}
+
+	modelID := strings.TrimPrefix(r.URL.Path, "/v1/models/")
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		s.handleModels(w, r)
+		return
+	}
+
+	// Check if model is defined
+	found := false
+	if _, exists := s.cfg.Models[modelID]; exists {
+		found = true
+	}
+	if !found {
+		for _, p := range s.cfg.Providers {
+			for _, m := range p.Models {
+				if m == modelID {
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+	}
+	if !found {
+		if _, exists := s.cfg.ModelAliases[modelID]; exists {
+			found = true
+		}
+	}
+
+	if !found {
+		writeOpenAIError(w, http.StatusNotFound, fmt.Sprintf("The model '%s' does not exist", modelID), "invalid_request_error", "model_not_found")
+		return
+	}
+
+	if client, hasClient := auth.GetClientInfo(r.Context()); hasClient {
+		if !client.CanAccessModel(modelID) {
+			writeOpenAIError(w, http.StatusForbidden, fmt.Sprintf("Your API key does not have permission to access model '%s'", modelID), "permission_error", "model_access_denied")
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(ModelInfo{
+		ID:      modelID,
+		Object:  "model",
+		Created: time.Now().Unix(),
+		OwnedBy: "phosphor",
 	})
 }
 
