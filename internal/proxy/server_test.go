@@ -2207,6 +2207,27 @@ func TestServer_GzipCompression(t *testing.T) {
 	}
 }
 
+func TestServer_Health_MethodNotAllowed(t *testing.T) {
+	srv, _, _ := setupTestServer(t, nil)
+
+	// GET is allowed
+	reqGet := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rrGet := httptest.NewRecorder()
+	srv.ServeHTTP(rrGet, reqGet)
+	if rrGet.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on GET /health, got %d", rrGet.Code)
+	}
+
+	// POST should be rejected with 405 Method Not Allowed
+	reqPost := httptest.NewRequest(http.MethodPost, "/health", strings.NewReader(`{}`))
+	rrPost := httptest.NewRecorder()
+	srv.ServeHTTP(rrPost, reqPost)
+	if rrPost.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405 Method Not Allowed on POST /health, got %d", rrPost.Code)
+	}
+}
+
+
 
 
 
