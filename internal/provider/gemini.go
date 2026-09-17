@@ -61,12 +61,14 @@ func (p *GeminiProvider) SupportsModel(model string) bool {
 }
 
 func (p *GeminiProvider) getEndpointURL(model string, stream bool) string {
-	baseURL := strings.TrimRight(p.cfg.BaseURL, "/")
+	baseURL := strings.TrimRight(strings.TrimSpace(p.cfg.BaseURL), "/")
 	if baseURL == "" {
 		baseURL = "https://generativelanguage.googleapis.com/v1beta"
+	} else {
+		baseURL = strings.TrimSuffix(baseURL, "/openai")
 	}
 
-	cleanModel := strings.TrimPrefix(model, "models/")
+	cleanModel := strings.TrimPrefix(strings.TrimSpace(model), "models/")
 	action := "generateContent"
 	if stream {
 		action = "streamGenerateContent?alt=sse"

@@ -195,3 +195,24 @@ func TestGeminiProvider_ErrorResponse(t *testing.T) {
 		t.Errorf("expected error to mention 400, got %v", err)
 	}
 }
+
+func TestGeminiProvider_EndpointNormalization(t *testing.T) {
+	tests := []struct {
+		baseURL  string
+		model    string
+		stream   bool
+		expected string
+	}{
+		{"", "gemini-2.0-flash", false, "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"},
+		{"https://generativelanguage.googleapis.com/v1beta/", "gemini-2.0-flash", false, "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"},
+		{"https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.0-flash", false, "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"},
+		{"https://generativelanguage.googleapis.com/v1beta/openai/", "models/gemini-2.0-flash", true, "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:streamGenerateContent?alt=sse"},
+	}
+
+	for _, tt := range tests {
+		p := NewGeminiProvider(config.ProviderConfig{BaseURL: tt.baseURL})
+		if got := p.getEndpointURL(tt.model, tt.stream); got != tt.expected {
+			t.Errorf("baseURL %q: expected %q, got %q", tt.baseURL, tt.expected, got)
+		}
+	}
+}
