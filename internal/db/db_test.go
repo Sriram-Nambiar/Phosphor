@@ -921,6 +921,34 @@ func TestDB_Backup(t *testing.T) {
 	}
 }
 
+func TestDB_CloseIdempotent(t *testing.T) {
+	d, err := New(":memory:")
+	if err != nil {
+		t.Fatalf("failed to create memory db: %v", err)
+	}
+
+	// First close
+	if err := d.Close(); err != nil {
+		t.Fatalf("first close failed: %v", err)
+	}
+
+	// Second close must be a no-op and return nil
+	if err := d.Close(); err != nil {
+		t.Fatalf("second close should be idempotent, got error: %v", err)
+	}
+
+	// Third close
+	if err := d.Close(); err != nil {
+		t.Fatalf("third close should be idempotent, got error: %v", err)
+	}
+
+	// Nil DB close
+	var nilDB *DB
+	if err := nilDB.Close(); err != nil {
+		t.Fatalf("nil DB close should return nil, got error: %v", err)
+	}
+}
+
 
 
 

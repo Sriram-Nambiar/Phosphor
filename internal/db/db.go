@@ -221,11 +221,15 @@ func (d *DB) Close() error {
 	if d == nil {
 		return nil
 	}
-	if d.closed.CompareAndSwap(false, true) {
-		close(d.asyncQueue)
-		d.wg.Wait()
+	if !d.closed.CompareAndSwap(false, true) {
+		return nil
 	}
-	return d.db.Close()
+	close(d.asyncQueue)
+	d.wg.Wait()
+	if d.db != nil {
+		return d.db.Close()
+	}
+	return nil
 }
 
 // Ping checks if the SQLite database connection is active and responding.
