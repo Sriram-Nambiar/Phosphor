@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -448,11 +449,15 @@ func (r *Router) ResolveCandidates(req *provider.ChatRequest) ([]CandidateTarget
 
 // ResolveCandidatesWithContext builds and ranks eligible candidates considering context metadata (such as sticky session affinity).
 func (r *Router) ResolveCandidatesWithContext(ctx context.Context, req *provider.ChatRequest) ([]CandidateTarget, config.RoutingStrategy, error) {
+	if req == nil {
+		return nil, "", errors.New("chat request cannot be nil")
+	}
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	sessionID := SessionIDFromContext(ctx)
-	if sessionID == "" && req != nil {
+	if sessionID == "" {
 		sessionID = req.User
 	}
 

@@ -473,4 +473,22 @@ func TestRouter_CircuitBreakerCooldownPenalty(t *testing.T) {
 	}
 }
 
+func TestRouter_ResolveCandidates_NilRequest(t *testing.T) {
+	cfg := &config.Config{}
+	r, err := NewRouter(cfg, nil)
+	if err != nil {
+		t.Fatalf("failed to create router: %v", err)
+	}
+
+	_, _, err = r.ResolveCandidates(nil)
+	if err == nil {
+		t.Fatal("expected error for nil request, got nil")
+	}
+
+	_, _, err = r.ResolveCandidatesWithContext(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected error for nil request with context, got nil")
+	}
+}
+
 
