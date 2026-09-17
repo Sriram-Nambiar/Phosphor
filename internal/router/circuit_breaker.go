@@ -122,6 +122,16 @@ func (cb *CircuitBreaker) GetConsecutiveFailures() int {
 	return cb.consecutiveFailures
 }
 
+// Reset resets the circuit breaker back to StateClosed and clears failure counts.
+func (cb *CircuitBreaker) Reset() {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	cb.state = StateClosed
+	cb.consecutiveFailures = 0
+	cb.consecutiveSuccesses = 0
+	cb.lastFailureTime = time.Time{}
+}
+
 // IsTransientFailure returns true if the error qualifies as a transient failure
 // (HTTP 429, HTTP 5xx, network timeouts, connection resets).
 func IsTransientFailure(err error) bool {

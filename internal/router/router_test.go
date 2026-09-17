@@ -54,6 +54,17 @@ func TestCircuitBreaker_TrippingAndReset(t *testing.T) {
 	if cb.GetState() != StateClosed {
 		t.Errorf("expected Closed after probe success, got %s", cb.GetState())
 	}
+
+	// Trip again, then manual Reset()
+	cb.RecordFailure(rateLimitErr)
+	cb.RecordFailure(rateLimitErr)
+	if cb.GetState() != StateOpen {
+		t.Fatalf("expected Open after 2 failures, got %s", cb.GetState())
+	}
+	cb.Reset()
+	if cb.GetState() != StateClosed || cb.GetConsecutiveFailures() != 0 || !cb.Allow() {
+		t.Errorf("expected Closed and zero failures after Reset(), got state=%s, failures=%d", cb.GetState(), cb.GetConsecutiveFailures())
+	}
 }
 
 func TestCostEstimation(t *testing.T) {

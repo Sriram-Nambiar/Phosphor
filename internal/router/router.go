@@ -223,6 +223,30 @@ func (r *Router) ProviderStatuses() map[string]string {
 	return statuses
 }
 
+// ResetCircuitBreaker resets the circuit breaker for the given provider.
+// If provider is "all" or "", it resets all circuit breakers.
+// Returns true if provider was found (or all reset), false otherwise.
+func (r *Router) ResetCircuitBreaker(provider string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if provider == "" || strings.EqualFold(provider, "all") {
+		for _, cb := range r.breakers {
+			if cb != nil {
+				cb.Reset()
+			}
+		}
+		return true
+	}
+
+	cb, exists := r.breakers[provider]
+	if !exists || cb == nil {
+		return false
+	}
+	cb.Reset()
+	return true
+}
+
 // StartHealthChecker starts background health probing at the specified interval.
 func (r *Router) StartHealthChecker(interval time.Duration) *HealthChecker {
 	r.mu.Lock()
