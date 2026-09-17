@@ -155,6 +155,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/v1/admin/cache/clear", s.handleAdminCacheClear)
 	s.mux.HandleFunc("/v1/admin/db/vacuum", s.handleAdminDBVacuum)
 	s.mux.HandleFunc("/v1/admin/db/backup", s.handleAdminDBBackup)
+	s.mux.HandleFunc("/v1/admin/circuit-breakers/reset", s.handleAdminCircuitBreakersReset)
 	s.mux.HandleFunc("/openapi.json", s.handleOpenAPI)
 }
 
@@ -1044,6 +1045,51 @@ func (s *Server) handleAdminDBBackup(w http.ResponseWriter, r *http.Request) {
 		Status:      "ok",
 		Destination: dest,
 		SizeBytes:   size,
+	})
+}
+
+type AdminCircuitBreakerResetRequest struct {
+	Provider string `json:"provider"`
+}
+
+type AdminCircuitBreakerResetResponse struct {
+	Status   string `json:"status"`
+	Message  string `json:"message"`
+	Provider string `json:"provider"`
+}
+
+func (s *Server) handleAdminCircuitBreakersReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeOpenAIError(w, http.StatusMethodNotAllowed, "Method not allowed. Only POST is supported.", "invalid_request_error", "method_not_allowed")
+		return
+	}
+
+	if s.router == nil {
+		writeOpenAIError(w, http.StatusServiceUnavailable, "Router is not available", "server_error", "router_unavailable")
+		return
+	}
+
+	var req AdminCircuitBreakerResetRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+
+	target := strings.TrimSpace(req.Provider)
+	if target == "" {
+		target = "all"
+	}
+
+	success := s.router.ResetCircuitBreaker(target)
+	if !success {
+		writeOpenAIError(w, http.StatusNotFound, fmt.Sprintf("Provider '%s' not found or has no circuit breaker", target), "invalid_request_error", "provider_not_found")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(AdminCircuitBreakerResetResponse{
+		Status:   "ok",
+		Message:  fmt.Sprintf("circuit breaker reset for '%s'", target),
+		Provider: target,
 	})
 }
 

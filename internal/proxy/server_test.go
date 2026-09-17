@@ -2400,6 +2400,54 @@ func TestServer_HeaderSanitizationAndClamping(t *testing.T) {
 	}
 }
 
+func TestServer_AdminCircuitBreakersReset(t *testing.T) {
+	srv, _, _ := setupTestServer(t, nil)
+
+	// 1. Reset specific provider
+	reqBody := `{"provider":"mock-p"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/circuit-breakers/reset", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var res AdminCircuitBreakerResetResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if res.Status != "ok" || res.Provider != "mock-p" {
+		t.Errorf("unexpected response: %+v", res)
+	}
+
+	// 2. Reset all providers
+	reqAll := httptest.NewRequest(http.MethodPost, "/v1/admin/circuit-breakers/reset", strings.NewReader(`{"provider":"all"}`))
+	reqAll.Header.Set("Content-Type", "application/json")
+	rrAll := httptest.NewRecorder()
+	srv.ServeHTTP(rrAll, reqAll)
+	if rrAll.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for all, got %d", rrAll.Code)
+	}
+
+	// 3. Reset non-existent provider -> 404
+	reqMissing := httptest.NewRequest(http.MethodPost, "/v1/admin/circuit-breakers/reset", strings.NewReader(`{"provider":"unknown-xyz"}`))
+	reqMissing.Header.Set("Content-Type", "application/json")
+	rrMissing := httptest.NewRecorder()
+	srv.ServeHTTP(rrMissing, reqMissing)
+	if rrMissing.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 Not Found, got %d", rrMissing.Code)
+	}
+
+	// 4. GET method rejected -> 405
+	reqGet := httptest.NewRequest(http.MethodGet, "/v1/admin/circuit-breakers/reset", nil)
+	rrGet := httptest.NewRecorder()
+	srv.ServeHTTP(rrGet, reqGet)
+	if rrGet.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405 Method Not Allowed, got %d", rrGet.Code)
+	}
+}
+
 
 
 
