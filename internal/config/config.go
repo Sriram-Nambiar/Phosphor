@@ -514,7 +514,7 @@ func (c *Config) Validate() error {
 
 	for _, ipStr := range c.Security.AllowedIPs {
 		s := strings.TrimSpace(ipStr)
-		if s == "" {
+		if s == "" || strings.EqualFold(s, "localhost") {
 			continue
 		}
 		if _, _, err := net.ParseCIDR(s); err != nil && net.ParseIP(s) == nil {
@@ -523,7 +523,7 @@ func (c *Config) Validate() error {
 	}
 	for _, ipStr := range c.Security.BlockedIPs {
 		s := strings.TrimSpace(ipStr)
-		if s == "" {
+		if s == "" || strings.EqualFold(s, "localhost") {
 			continue
 		}
 		if _, _, err := net.ParseCIDR(s); err != nil && net.ParseIP(s) == nil {

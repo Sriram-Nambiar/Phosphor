@@ -30,6 +30,11 @@ func NewIPFilter(allowed []string, blocked []string) (*IPFilter, error) {
 			continue
 		}
 		f.hasAllowlist = true
+		if strings.EqualFold(entry, "localhost") {
+			f.allowedExact["127.0.0.1"] = true
+			f.allowedExact["::1"] = true
+			continue
+		}
 		if strings.Contains(entry, "/") {
 			_, ipNet, err := net.ParseCIDR(entry)
 			if err != nil {
@@ -51,6 +56,11 @@ func NewIPFilter(allowed []string, blocked []string) (*IPFilter, error) {
 			continue
 		}
 		f.hasDenylist = true
+		if strings.EqualFold(entry, "localhost") {
+			f.blockedExact["127.0.0.1"] = true
+			f.blockedExact["::1"] = true
+			continue
+		}
 		if strings.Contains(entry, "/") {
 			_, ipNet, err := net.ParseCIDR(entry)
 			if err != nil {

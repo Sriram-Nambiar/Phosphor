@@ -116,3 +116,20 @@ func TestIPFilter_Middleware(t *testing.T) {
 		t.Errorf("expected inner handler to NOT be called for blocked IP")
 	}
 }
+
+func TestIPFilter_LocalhostSupport(t *testing.T) {
+	filter, err := NewIPFilter([]string{"localhost"}, nil)
+	if err != nil {
+		t.Fatalf("failed to create filter with localhost: %v", err)
+	}
+
+	if !filter.IsAllowed("127.0.0.1") {
+		t.Error("expected 127.0.0.1 to be allowed when localhost is configured")
+	}
+	if !filter.IsAllowed("::1") {
+		t.Error("expected ::1 to be allowed when localhost is configured")
+	}
+	if filter.IsAllowed("192.168.1.1") {
+		t.Error("expected non-localhost IP to be blocked")
+	}
+}
